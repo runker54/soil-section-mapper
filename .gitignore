@@ -1,0 +1,12 @@
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 运行时与日志
+temp/
+*.log
+*.zip
+
+# 系统
+Thumbs.db
+.DS_Store
