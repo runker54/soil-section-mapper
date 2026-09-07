@@ -36,7 +36,7 @@ Tech stack: Rust · Tauri 2 · MapLibre GL · GDAL 3.10 (dynamically loaded via 
 - Section point table: all fields editable, soil species and elevation extracted along the line by distance, drag to reorder, add/delete rows synced across table, figure, and map
 
 ### Data and Export
-- Built-in soil species code table (1,329 entries) and soil species color table (1,505 entries); user JSON import to override, template export, restore built-in
+- Coding scheme: province-wide (built-in code table of 1,329 + color table of 1,505 entries) or county re-coding — species found in the loaded soil map are renumbered 1..N (keeping the provincial classification order); within a soil order the hue family is shared and shades are assigned by polygon area (large→light, rare→saturated, per the color-recommendation standard); user JSON import, template export, restore built-in
 - Export PNG (1×–4× resolution) and per-cell detail CSV; project save/open
 - CRS auto-detection; EPSG:4326/4490 automatically converted to CGCS2000 3-degree Gauss-Krüger zones for computation; warning on load for files missing a CRS
 

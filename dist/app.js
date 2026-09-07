@@ -74,7 +74,7 @@ const S = {
   dem: { path: "", meta: null },
   cfg: {
     lineIndex: 0,
-    sampleStep: 20, smoothing: 5, extendsM: 0,
+    sampleStep: 20, smoothing: 5, extendsM: 0, codeScheme: "province",
     orientation: "high_left", veAuto: true, ve: 10,
     ptNameField: "", ptNoField: "",
     filterMode: "field", filterField: "", filterValue: "", filterDist: 600,
@@ -103,7 +103,7 @@ const S = {
     cellSel: null,          // 当前选中格子
     rowBands: null,         // 行级独立分段 { [rowKey]: [{a,b,text},...] }（与土种格不对齐；相邻同值合并初始化）
     bandSel: null,          // 当前选中的行分段 { key, k }
-    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, terrStyle: "soil", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
+    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, terrStyle: "soil", terrBandH: 0, terrLine: "black", fontFamily: "", fontScope: "all", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
   },
   table: [],
   result: null,
@@ -119,6 +119,7 @@ const S = {
   nextImpId: 1,
   map: { ov: null, mode: "view", draw: [], drawing: false, pts: [], drawHist: [], ptsHist: [], mouse: null, customLine: null, customPts: null, view: { z: 1, px: 0, py: 0 }, base: null, eRange: null, __panMoved: false, layers: { basemap: true, dem: true, soil: true, lines: true, points: true }, ptsLoaded: false, lodTimer: null, loading: false },
   builtin: { codes: [], colors: [], tlNames: [], colorByName: {}, codeByTz: {} },
+  builtinCounty: null,   // 区县重编方案表（后端按土壤图面积生成）：{ codes, colorByName }
 };
 
 /* ---------------- 工具 ---------------- */
@@ -328,6 +329,7 @@ function buildReq() {
   const c = S.cfg;
   return {
     use_custom: !!S.useCustom,
+    code_scheme: c.codeScheme || "province",
     sample_interval_m: +c.sampleStep || 20,
     extend_m: +c.extendsM || 0,
     smoothing: +c.smoothing || 0,
@@ -868,6 +870,22 @@ function buildSidebar() {
         rng("layStripH", "色带高度", 24, 100, 2, L.stripH || 46, "px") +
         rng("layRowH", "默认行高", 34, 160, 2, L.rowH || 58, "px") +
         rng("layFont", "整体字号", 0.5, 2.5, 0.05, L.fontScale || 1, "×") +
+        rng("layBandH", "表层色带厚", 0, 220, 4, L.terrBandH || 0, "px") +
+        `<div class="row"><label>剖面线</label>
+          <label class="mini"><input type="radio" name="terrLine" value="black" ${L.terrLine !== "soil" ? "checked" : ""}/>黑色</label>
+          <label class="mini"><input type="radio" name="terrLine" value="soil" ${L.terrLine === "soil" ? "checked" : ""}/>土种色</label>
+        </div>
+        <div class="row" title="字体族与应用范围：可整体换字体，或仅作用于表格/图面标注/轴刻度某一部位">
+          <label>字体</label>
+          <select id="layFontFam" class="lay-num" style="flex:1">
+            ${[["", "跟随界面"], ["SimSun, serif", "宋体"], ["SimHei, sans-serif", "黑体"], ["KaiTi, serif", "楷体"], ["FangSong, serif", "仿宋"], ["'Microsoft YaHei', sans-serif", "微软雅黑"], ["DengXian, sans-serif", "等线"], ["Arial, sans-serif", "Arial"], ["'Times New Roman', serif", "Times New Roman"]]
+              .map(([v, n]) => `<option value="${v}" ${(L.fontFamily || "") === v ? "selected" : ""}>${n}</option>`).join("")}
+          </select>
+          <select id="layFontScope" class="lay-num" style="flex:1">
+            ${[["all", "全部"], ["tbl", "仅表格"], ["lab", "仅图面标注"], ["axis", "仅轴刻度"]]
+              .map(([v, n]) => `<option value="${v}" ${(L.fontScope || "all") === v ? "selected" : ""}>${n}</option>`).join("")}
+          </select>
+        </div>` +
         `<div class="row"><label>图幅宽 px</label><input type="number" class="lay-num" id="layFigWN" min="0" max="6000" step="50" value="${L.figW || 0}"/><span class="mini lay-unit">0=自动</span></div>
         <div class="row"><label>地形配色</label>
           <label class="mini"><input type="radio" name="terrStyle" value="soil" ${L.terrStyle !== "classic" ? "checked" : ""}/>土种色</label>
@@ -1219,6 +1237,15 @@ function wireSidebar() {
     c.layout.terrStyle = e.target.value;
     if (S.result) renderFigure(S.result);
   });
+  bindLay("layBandH", "terrBandH");
+  document.querySelectorAll('input[name="terrLine"]').forEach(r => r.onchange = e => {
+    if (!e.target.checked) return;
+    c.layout.terrLine = e.target.value;
+    if (S.result) renderFigure(S.result);
+  });
+  const ffSel = $("layFontFam"), fsSel = $("layFontScope");
+  if (ffSel) ffSel.onchange = () => { c.layout.fontFamily = ffSel.value; if (S.result) renderFigure(S.result); };
+  if (fsSel) fsSel.onchange = () => { c.layout.fontScope = fsSel.value; if (S.result) renderFigure(S.result); };
   document.querySelectorAll(".ghead").forEach(h => h.onclick = () => {
     const sec = h.parentElement;
     sec.classList.toggle("closed");
@@ -1345,12 +1372,15 @@ function renderPointsTable() {
 function renderCodesTable() {
   const tbl = $("codesTable");
   if (!tbl) return;
+  const useCounty = S.cfg.codeScheme === "county" && S.builtinCounty;
+  const all = useCounty ? S.builtinCounty.codes : S.builtin.codes;
+  const cmap = useCounty ? S.builtinCounty.colorByName : (S.builtin.colorByName || {});
   const q = ($("codeSearch")?.value || "").trim();
-  const rows = S.builtin.codes.filter(r => !q || [r.code, r.tz, r.ts, r.yl, r.tl].some(v => String(v || "").includes(q)));
+  const rows = all.filter(r => !q || [r.code, r.tz, r.ts, r.yl, r.tl].some(v => String(v || "").includes(q)));
   tbl.innerHTML = "<thead><tr><th>编号</th><th>色</th><th>土类</th><th>亚类</th><th>土属</th><th>土种</th></tr></thead><tbody>"
     + rows.slice(0, 500).map(r => `<tr>
       <td class="num">${esc(r.code)}</td>
-      <td><span class="swatch" style="background:${esc((S.builtin.colorByName || {})[r.tl] || "#ccc")}"></span></td>
+      <td><span class="swatch" style="background:${esc(cmap[r.tz] || cmap[r.tl] || "#ccc")}"></span></td>
       <td>${esc(r.tl)}</td><td>${esc(r.yl)}</td><td>${esc(r.ts)}</td><td>${esc(r.tz)}</td></tr>`).join("") + "</tbody>";
   const cc = $("codeCount");
   if (cc) cc.textContent = `${rows.length} 条` + (rows.length > 500 ? "（显示前 500）" : "");
@@ -1486,11 +1516,12 @@ function renderFigure(res) {
 
   /* --- 三普土种行预算（满字号优先，行数让步） --- */
   const segs = res.segments;
+  const FS = LAY.fontScale || 1;   // 整体字号：参与换行/缩字号度量（渲染后统一缩放，二者叠加正好填满格宽）
   const tzFit = (text, cellPx) => {
     const L = Math.max(String(text).length, 1);
-    const perFull = Math.max(2, Math.floor((cellPx - 8) / 15.3));
+    const perFull = Math.max(2, Math.floor((cellPx - 8) / (15.3 * FS)));
     let rowsN = Math.ceil(L / perFull), fs = 15.3, per = perFull;
-    if (rowsN > 4) { rowsN = 4; per = Math.ceil(L / 4); fs = Math.max(6, Math.min(15.3, (cellPx - 8) / per)); }
+    if (rowsN > 4) { rowsN = 4; per = Math.ceil(L / 4); fs = Math.max(6, Math.min(15.3, (cellPx - 8) / per / FS)); }
     const lines = [];
     for (let k = 0; k < L; k += per) lines.push(String(text).slice(k, k + per));
     return { rowsN, fs, lines };
@@ -1501,7 +1532,6 @@ function renderFigure(res) {
     const wpx = (B[i + 1] - B[i]) * ppkAll + (i === 0 || i === segs.length - 1 ? ext * ppkAll : 0);
     maxTzRows = Math.max(maxTzRows, tzFit(s.tz || "—", wpx).rowsN);
   });
-  const FS = LAY.fontScale || 1;
   const tzRowH = Math.max(rowH, maxTzRows * 15.3 * FS * 1.18 + 10);
 
   const rowsOn = c.rows.filter(r => r.on && r.key !== "code");
@@ -1562,35 +1592,36 @@ function renderFigure(res) {
     });
   }
   svg.appendChild(defs);
+  // 公共几何：段内地形点/边界插值（土种色表层、土类色剖面线共用）
+  const kmLo = stations[0][0], kmHi = stations[stations.length - 1][0];
+  const dispAt = (km) => {
+    const kk = Math.min(Math.max(km, kmLo), kmHi);
+    let i = 0;
+    while (i < stations.length - 2 && stations[i + 1][0] < kk) i++;
+    const t = (kk - stations[i][0]) / Math.max(stations[i + 1][0] - stations[i][0], 1e-9);
+    return disp[i] + t * (disp[i + 1] - disp[i]);
+  };
+  const D = LAY.terrBandH > 0 ? Math.round(+LAY.terrBandH) : Math.max(42, Math.round(terrainH * 0.13));   // 表层色带厚度（0=自动）
+  // 段范围：首末段扩展覆盖两端外延区；左右各重叠 0.7px 消除相邻段抗锯齿白缝
+  const segRange = terrSegs.map((sg, i) => ({
+    a: i === 0 ? Math.min(sg.a, kmLo) : sg.a,
+    b: i === terrSegs.length - 1 ? Math.max(sg.b, kmHi) : sg.b,
+    color: sg.color,
+  }));
+  const segPts = (a, b) => {
+    const ka = Math.min(Math.max(a, kmLo), kmHi), kb = Math.min(Math.max(b, kmLo), kmHi);
+    const pts = [[ka, dispAt(ka)]];
+    stations.forEach((s, j) => { if (s[0] > ka && s[0] < kb) pts.push([s[0], disp[j]]); });
+    pts.push([kb, dispAt(kb)]);
+    return pts;
+  };
   if (terrStyle === "classic") {
     let dPath = `M ${xpx(stations[0][0])} ${ypx(dispBase)}`;
     stations.forEach((s, i) => dPath += ` L ${xpx(s[0])} ${ypx(disp[i])}`);
     dPath += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
-    svg.appendChild(el("path", { d: dPath, fill: "url(#terrGrad)", stroke: "#3f3a36", "stroke-width": 1.5 }));
+    svg.appendChild(el("path", { d: dPath, fill: "url(#terrGrad)", stroke: "none" }));
   } else {
     // 表层着色：色带贴地形表面垂直向下 D 像素（同一土种无论高低位置都有颜色），带下接灰底渐变
-    const kmLo = stations[0][0], kmHi = stations[stations.length - 1][0];
-    const dispAt = (km) => {
-      const kk = Math.min(Math.max(km, kmLo), kmHi);
-      let i = 0;
-      while (i < stations.length - 2 && stations[i + 1][0] < kk) i++;
-      const t = (kk - stations[i][0]) / Math.max(stations[i + 1][0] - stations[i][0], 1e-9);
-      return disp[i] + t * (disp[i + 1] - disp[i]);
-    };
-    const D = Math.max(42, Math.round(terrainH * 0.13));   // 表层过渡带总厚度（顶部实色约 35%，底缘透明）
-    // 段范围：首末段扩展覆盖两端外延区；左右各重叠 0.7px 消除相邻段抗锯齿白缝
-    const segRange = terrSegs.map((sg, i) => ({
-      a: i === 0 ? Math.min(sg.a, kmLo) : sg.a,
-      b: i === terrSegs.length - 1 ? Math.max(sg.b, kmHi) : sg.b,
-      color: sg.color,
-    }));
-    const segPts = (a, b) => {
-      const ka = Math.min(Math.max(a, kmLo), kmHi), kb = Math.min(Math.max(b, kmLo), kmHi);
-      const pts = [[ka, dispAt(ka)]];
-      stations.forEach((s, j) => { if (s[0] > ka && s[0] < kb) pts.push([s[0], disp[j]]); });
-      pts.push([kb, dispAt(kb)]);
-      return pts;
-    };
     // ① 各段灰底：上边界 = 地形线下移 D（表层带下至基线）
     segRange.forEach(sg => {
       const pts = segPts(sg.a, sg.b);
@@ -1610,7 +1641,20 @@ function renderFigure(res) {
       d += " Z";
       svg.appendChild(el("path", { d, fill: `url(#terrG${i})`, stroke: "none" }));
     });
-    // ③ 整体轮廓（表面折线 + 两端竖线 + 基线），与经典模式描边一致
+  }
+  /* --- 地形轮廓线：黑色（整体）或土种色（表面按段着色，端竖线与基线仍为黑） --- */
+  if (LAY.terrLine === "soil") {
+    segRange.forEach(sg => {
+      const pts = segPts(sg.a, sg.b);
+      if (pts.length < 2 || pts[pts.length - 1][0] - pts[0][0] < 0.3) return;
+      let d = `M ${xpx(pts[0][0])} ${ypx(pts[0][1])}`;
+      pts.forEach(p => d += ` L ${xpx(p[0])} ${ypx(p[1])}`);
+      svg.appendChild(el("path", { d, fill: "none", stroke: sg.color || "#3f3a36", "stroke-width": 1.5 }));
+    });
+    svg.appendChild(el("line", { x1: xpx(kmLo), x2: xpx(kmLo), y1: ypx(disp[0]), y2: ypx(dispBase), stroke: "#3f3a36", "stroke-width": 1.5 }));
+    svg.appendChild(el("line", { x1: xpx(kmHi), x2: xpx(kmHi), y1: ypx(disp[disp.length - 1]), y2: ypx(dispBase), stroke: "#3f3a36", "stroke-width": 1.5 }));
+    svg.appendChild(el("line", { x1: xpx(kmLo), x2: xpx(kmHi), y1: ypx(dispBase), y2: ypx(dispBase), stroke: "#3f3a36", "stroke-width": 1.5 }));
+  } else {
     let dPath2 = `M ${xpx(stations[0][0])} ${ypx(dispBase)}`;
     stations.forEach((s, i) => dPath2 += ` L ${xpx(s[0])} ${ypx(disp[i])}`);
     dPath2 += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
@@ -1818,7 +1862,7 @@ function renderFigure(res) {
     const stripTop = tableTop;
     const showCode = c.rows.find(r => r.key === "code")?.on;
     const codeBand = bandOf(c.rows.find(r => r.key === "code") || {});
-    const fitFontCode = (text, cellPx) => Math.max(6, Math.min(15.3, (cellPx - 6) / (text.length * 0.62)));
+    const fitFontCode = (text, cellPx) => Math.max(6, Math.min(15.3, (cellPx - 6) / (text.length * 0.62 * FS)));
     segs.forEach((s, i) => {
       let x0 = xpx0(dispB[i]), x1 = xpx0(dispB[i + 1]);
       if (i === 0) x0 = left;
@@ -1868,7 +1912,7 @@ function renderFigure(res) {
             if (row.key === "lith") txt = tblVal(s.no, "lith") || s.lith || parentOf(s.tz, s.tl) || "—";
             else if (row.key === "geo") txt = tblVal(s.no, "geo") || s.geo || "—";
             else txt = s[row.key] || "—";
-            fs2 = Math.max(6, Math.min(row.key === "lith" ? 13.5 : 15.3, (x1 - x0 - 8) / String(txt).length));
+            fs2 = Math.max(6, Math.min(row.key === "lith" ? 13.5 : 15.3, (x1 - x0 - 8) / (String(txt).length * FS)));
             lines = [String(txt)];
           }
           const lh2 = fs2 * 1.18;
@@ -2011,6 +2055,24 @@ function renderFigure(res) {
     svg.querySelectorAll("[font-size]").forEach(t => {
       const v = parseFloat(t.getAttribute("font-size"));
       if (isFinite(v)) t.setAttribute("font-size", (v * FS).toFixed(2));
+    });
+  }
+  // 字体族：按应用范围（全部/表格/图面标注/轴刻度）分部位设置
+  const FF = LAY.fontFamily || "";
+  if (FF) {
+    const scope = LAY.fontScope || "all";
+    svg.querySelectorAll("text").forEach(t => {
+      const x = +(t.getAttribute("x") || 0), y = +(t.getAttribute("y") || 0);
+      let tx = 0;
+      const tr = t.getAttribute("transform");
+      if (tr) { const m = tr.match(/translate\(\s*([-\d.]+)/); if (m) tx = +m[1]; }
+      const px = x || tx;
+      let hit;
+      if (scope === "all") hit = true;
+      else if (px < left - 4) hit = scope === "axis";          // 轴刻度/轴标签（含旋转的高程轴）
+      else if (y > tableTop) hit = scope === "tbl";            // 表格区（含行标签）
+      else hit = scope === "lab";                              // 图面标注（地名/点号/界线/指针）
+      if (hit) t.setAttribute("font-family", FF);
     });
   }
   bindDragEngine(svg);
@@ -3086,11 +3148,14 @@ if (__bt) {
     const k = +bar.dataset.bandK;
     if (!Array.isArray(segsB) || !(k >= 0) || k >= segsB.length) return;
     segsB[k].text = __bt.value;
-    // 土种编号行：新编号 → 编码表土类 → 色带色同步（拆分改码后色带随之更新）
+    // 土种编号行：新编号 → 当前编码方案表 → 色带色同步（拆分改码后色带随之更新）
     if (bKey === "code") {
-      const rec = (S.builtin.codes || []).find(r => String(r.code) === String(__bt.value).trim());
+      const useCounty = S.cfg.codeScheme === "county" && S.builtinCounty;
+      const tblCodes = useCounty ? S.builtinCounty.codes : (S.builtin.codes || []);
+      const tblColors = useCounty ? S.builtinCounty.colorByName : (S.builtin.colorByName || {});
+      const rec = tblCodes.find(r => String(r.code) === String(__bt.value).trim());
       if (rec) {
-        const col = (S.builtin.colorByName || {})[rec.tl];
+        const col = tblColors[rec.tz] || tblColors[rec.tl];
         if (col) segsB[k].color = col;
       }
     }
@@ -3145,10 +3210,38 @@ async function loadBuiltin() {
     S.builtin.tlNames = bt.tl_names || [];
     S.builtin.colorByName = {};
     (S.builtin.colors || []).forEach(cc => { S.builtin.colorByName[cc.name || cc.tl] = cc.hex || cc.color; });
+    S.builtinCounty = null;
+    if (bt.county) {
+      const m = {};
+      (bt.county.colors || []).forEach(cc => { m[cc.name || cc.tl] = cc.hex || cc.color; });
+      S.builtinCounty = { codes: bt.county.codes || [], colorByName: m };
+    }
     renderCodesTable();
     buildSidebar();
   } catch (e) { /* 未初始化时忽略 */ }
 }
+/* 编码方案切换：全省统一 ↔ 区县重编（重算编号/颜色 → 拉方案表 → band 快照按新值序列重建） */
+document.querySelectorAll('input[name="codeScheme"]').forEach(r => r.onchange = async e => {
+  if (!e.target.checked) return;
+  S.cfg.codeScheme = e.target.value;
+  if (S.result && $("figure") && $("figure").__dragCtx) {
+    await compute(true);
+    await loadBuiltin();
+    S.cfg.rows.forEach(rw => {
+      if (rw.band) {
+        const sg = initBandSegs(rw);
+        if (sg) { if (!S.cfg.rowBands) S.cfg.rowBands = {}; S.cfg.rowBands[rw.key] = sg; }
+      }
+    });
+    renderFigure(S.result);
+  } else {
+    await loadBuiltin();
+  }
+  const info = $("schemeInfo");
+  if (info) info.textContent = S.cfg.codeScheme === "county"
+    ? `区县方案：${((S.builtinCounty && S.builtinCounty.codes) || []).length} 个土种（同土类 面积大→淡 小→浓）`
+    : "";
+});
 (async () => {
   buildSidebar();
   renderPointsTable();

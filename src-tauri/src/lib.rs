@@ -17,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(std::sync::Mutex::new(commands::AppState {
             builtin2: None,
+            county: None,
             line_src: None,
             point_src: None,
             soil_src: None,

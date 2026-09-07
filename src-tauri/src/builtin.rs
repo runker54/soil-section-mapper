@@ -92,3 +92,44 @@ impl Builtin {
         "#cccccc".to_string()
     }
 }
+
+/* ---------------- 区县编码/配色方案（基于配色推荐标准） ---------------- */
+pub static HUE_PRESETS_JSON: &str = include_str!("../resources/hue_presets.json");
+pub static HUE_RAMPS_JSON: &str = include_str!("../resources/hue_ramps.json");
+
+fn hex_rgb(h: &str) -> (u8, u8, u8) {
+    let h = h.trim_start_matches('#');
+    if h.len() != 6 { return (204, 204, 204); }
+    (u8::from_str_radix(&h[0..2], 16).unwrap_or(204), u8::from_str_radix(&h[2..4], 16).unwrap_or(204), u8::from_str_radix(&h[4..6], 16).unwrap_or(204))
+}
+fn rgb_hex(r: u8, g: u8, b: u8) -> String {
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
+/// 土类推荐色调的色标梯度中取第 i/n 档（n 份，i∈[0,n)，0=最淡，n-1=最浓）；
+/// 档数超过色标级数时在相邻级间线性插值（与原配色工具一致）
+pub fn ramp_color(tl: &str, idx: usize, n: usize) -> Option<String> {
+    if n == 0 { return None; }
+    let presets: Vec<Value> = serde_json::from_str(HUE_PRESETS_JSON).unwrap_or_default();
+    let ramps: std::collections::HashMap<String, Vec<String>> =
+        serde_json::from_str(HUE_RAMPS_JSON).unwrap_or_default();
+    let p = presets.iter().find(|p| p.get("tl").and_then(|v| v.as_str()) == Some(tl))?;
+    let series = p.get("series").and_then(|v| v.as_str()).unwrap_or("");
+    let tone = p.get("tone").and_then(|v| v.as_str()).unwrap_or("");
+    if series.is_empty() || tone.is_empty() { return None; }
+    let key = format!("{}/{}", series, tone);
+    let ramp = ramps.get(&key)?;
+    if ramp.is_empty() { return None; }
+    if n == 1 { return Some(format!("#{}", ramp[ramp.len() / 2])); }
+    let t = idx as f64 / (n - 1) as f64 * (ramp.len() - 1) as f64;
+    let lo = t.floor() as usize;
+    let hi = (lo + 1).min(ramp.len() - 1);
+    let f = t - lo as f64;
+    let (r1, g1, b1) = hex_rgb(&ramp[lo]);
+    let (r2, g2, b2) = hex_rgb(&ramp[hi]);
+    Some(rgb_hex(
+        (r1 as f64 + (r2 as f64 - r1 as f64) * f).round() as u8,
+        (g1 as f64 + (g2 as f64 - g1 as f64) * f).round() as u8,
+        (b1 as f64 + (b2 as f64 - b1 as f64) * f).round() as u8,
+    ))
+}

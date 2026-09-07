@@ -22,7 +22,7 @@ fn main() {
     let g = match gdal_ffi::init(&gdal_dir) { Ok(g) => g, Err(e) => { println!("GDAL init FAIL: {}", e); return; } };
     ck!("gdal_init", g.version().starts_with("GDAL"), &g.version());
 
-    let mut st = AppState { builtin2: None, line_src: None, point_src: None, soil_src: None, dem: None, custom_line: None, custom_points: None, dem_image: None };
+    let mut st = AppState { builtin2: None, county: None, line_src: None, point_src: None, soil_src: None, dem: None, custom_line: None, custom_points: None, dem_image: None };
 
     // 2 图层枚举
     let layers = tauri::async_runtime::block_on(soil_section_studio::commands::vector_layers(base.to_string() + r"\安龙县断面点加密.gdb")).unwrap();
@@ -58,7 +58,7 @@ fn main() {
         ],
         "points_override": []
     });
-    let res = compute_impl(&st, req).unwrap();
+    let res = compute_impl(&mut st, req).unwrap();
     ck!("compute(文件模式)", res["total_km"].as_f64().unwrap() > 50.0
         && res["points"].as_array().unwrap().len() == 10,
         &format!("{:.2}km {}点 VE{}", res["total_km"], res["points"].as_array().unwrap().len(), res["ve"]));
@@ -87,7 +87,7 @@ fn main() {
         "point_filter": {"mode": "field", "field": "线", "value": "1", "max_dist_m": 600.0},
         "zones": [], "points_override": ov
     });
-    let res2 = compute_impl(&st, req2).unwrap();
+    let res2 = compute_impl(&mut st, req2).unwrap();
     let names: Vec<&str> = res2["points"].as_array().unwrap().iter()
         .map(|p| p["name"].as_str().unwrap_or("")).collect();
     ck!("表格覆盖(改名/删点/加点)", names.contains(&"者干改名") && !names.contains(&"巷洞街")
@@ -148,7 +148,7 @@ fn main() {
     });
     // 8.55 跨源 override 污染（复现：文件点 + 旧自绘 override → 大部分点被丢弃）
     {
-        let ro = compute_impl(&st, json!({ "use_custom": false, "sample_interval_m": 50.0, "smoothing": 5,
+        let ro = compute_impl(&mut st, json!({ "use_custom": false, "sample_interval_m": 50.0, "smoothing": 5,
             "orientation": "high_left", "ve": null, "zones": [],
             "points_override": [
                 json!({ "no": 1, "name": "旧自绘A1", "ch_km": 0.0, "elev": 100.0 }),
@@ -164,7 +164,7 @@ fn main() {
         let ep = soil_section_studio::commands::geo_to_metric(g, &mut pa, 4326).unwrap();
         st.custom_line = Some((vec![pa.clone()], ep));
         st.custom_points = Some(vec![(pa[0].0, pa[0].1, "A1".into()), (pa[1].0, pa[1].1, "A2".into())]);
-        let ra = compute_impl(&st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 3,
+        let ra = compute_impl(&mut st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 3,
             "orientation": "high_left", "ve": null, "zones": [], "points_override": [] })).unwrap();
         let na = ra["points"].as_array().unwrap();
         ck!("剖面A(2点)", na.len() == 2 && na[0]["name"] == "A1", &format!("{}点 首点{}", na.len(), na[0]["name"]));
@@ -173,20 +173,20 @@ fn main() {
         let _ = soil_section_studio::commands::geo_to_metric(g, &mut pb, 4326).unwrap();
         st.custom_line = Some((vec![pb.clone()], ep));
         st.custom_points = Some(vec![(pb[0].0, pb[0].1, "B1".into()), (pb[1].0, pb[1].1, "B2".into()), (pb[2].0, pb[2].1, "B3".into())]);
-        let rb = compute_impl(&st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 3,
+        let rb = compute_impl(&mut st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 3,
             "orientation": "high_left", "ve": null, "zones": [], "points_override": [] })).unwrap();
         let nb = rb["points"].as_array().unwrap();
         ck!("剖面B(3点)", nb.len() == 3 && nb[0]["name"] == "B1", &format!("{}点 首点{} 总长{:.1}km", nb.len(), nb[0]["name"], rb["total_km"].as_f64().unwrap_or(0.0)));
 
         st.custom_points = None;   // B 剖面清空点（仅线）→ 后端应明确报错（前端已前置校验）
-        let rc = compute_impl(&st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 3,
+        let rc = compute_impl(&mut st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 3,
             "orientation": "high_left", "ve": null, "zones": [], "points_override": [] }));
         ck!("剖面B清空点(报错语义)", rc.is_err() && rc.unwrap_err().contains("布点"), "无点剖面明确报错");
         // 恢复 B 的点（供后续旧用例）
         st.custom_points = Some(vec![(pb[0].0, pb[0].1, "B1".into()), (pb[1].0, pb[1].1, "B2".into()), (pb[2].0, pb[2].1, "B3".into())]);
     }
 
-    let res3 = compute_impl(&st, req3).unwrap();
+    let res3 = compute_impl(&mut st, req3).unwrap();
     let cp = res3["points"].as_array().unwrap();
     ck!("compute(自定义线点)", cp.len() == 3
         && cp.iter().all(|p| !p["tz"].as_str().unwrap_or("").is_empty()),
@@ -210,7 +210,7 @@ fn main() {
         let _ = soil_section_studio::commands::geo_to_metric(g, &mut pl, 4326).unwrap();
         st.custom_line = Some((vec![lln], ep));
         st.custom_points = Some(vec![(pl[0].0, pl[0].1, "西端".into()), (pl[1].0, pl[1].1, "东端".into())]);
-        let res4 = compute_impl(&st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 5,
+        let res4 = compute_impl(&mut st, json!({ "use_custom": true, "sample_interval_m": 50.0, "smoothing": 5,
             "orientation": "high_left", "ve": null, "zones": [], "points_override": [] })).unwrap();
         let km = res4["total_km"].as_f64().unwrap_or(0.0);
         ck!("自绘线(4326→三度带)", len_m > 15000.0 && km > 15.0,

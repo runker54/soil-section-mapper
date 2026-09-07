@@ -11,7 +11,7 @@ fn main() {
     let g = gdal_ffi::init(&gdal_dir).expect("gdal init");
     println!("GDAL: {}", g.version());
 
-    let mut st = AppState { builtin2: None, line_src: None, point_src: None, soil_src: None, dem: None, custom_line: None, custom_points: None, dem_image: None };
+    let mut st = AppState { builtin2: None, county: None, line_src: None, point_src: None, soil_src: None, dem: None, custom_line: None, custom_points: None, dem_image: None };
     let line = use_layer(&(base.to_string() + r"\安龙县断面点加密.gdb"), "alx线合并").unwrap();
     println!("线: {} 要素 EPSG:{:?}", line.feats.len(), line.epsg);
     let pts = use_layer(&(base.to_string() + r"\安龙县断面点加密.gdb"), "alx点合并").unwrap();
@@ -52,7 +52,7 @@ fn main() {
         "points_override": []
     });
 
-    let res = compute_impl(&st, req).unwrap();
+    let res = compute_impl(&mut st, req).unwrap();
     println!("\n=== 图2-1-1 县级断面 ===");
     println!("total_km={:.3}  samples={}  ve={}  az={:.1}° {}  flip={}",
              res["total_km"].as_f64().unwrap(), res["sample_count"],

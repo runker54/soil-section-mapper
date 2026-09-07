@@ -8,6 +8,8 @@ use tauri::State;
 
 pub struct AppState {
     pub builtin2: Option<crate::builtin::Builtin>,
+    /// 区县编码/配色方案缓存（按当前土壤图土种面积生成；换图失效）
+    pub county: Option<crate::builtin::Builtin>,
     pub line_src: Option<VectorSrc>,
     pub point_src: Option<VectorSrc>,
     pub soil_src: Option<VectorSrc>,
@@ -51,6 +53,70 @@ pub fn gdal_init(dir: String) -> Result<Value, String> {
 /// 当前生效的内置表（用户导入覆盖优先）
 pub fn blt(st: &AppState) -> &crate::builtin::Builtin {
     st.builtin2.as_ref().unwrap_or_else(|| crate::builtin::get())
+}
+
+/// 区县编码/配色方案：聚合当前土壤图各土种图斑面积 → 按全省编码表顺序重排（保留红壤类靠前等
+/// 分类排序规律）→ 从 1 连续重编号；配色取土类推荐色调的色标梯度，同土类内面积大→淡、
+/// 面积小→浓（稀有小图斑最醒目，土壤图制图惯例）；土种数超出色标级数时相邻级间插值。
+fn build_county(soil: &VectorSrc, base: &crate::builtin::Builtin) -> crate::builtin::Builtin {
+    use std::collections::HashMap;
+    let mut agg: HashMap<String, (String, f64)> = HashMap::new();
+    for f in soil.feats.iter() {
+        let tz = f.attrs.get("TZ").cloned().unwrap_or_default();
+        if tz.is_empty() { continue; }
+        let tl = f.attrs.get("TL").cloned().unwrap_or_default();
+        let area: f64 = f.attrs.get("MJ_M2").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0);
+        let e = agg.entry(tz).or_insert((tl.clone(), 0.0));
+        e.1 += area;
+        if e.0.is_empty() { e.0 = tl; }
+    }
+    if agg.is_empty() {
+        return crate::builtin::build(json!([]), json!([]));
+    }
+    // 全省顺序索引（codes 数组序 = 土类首现序 + 组内序）
+    let order: HashMap<String, usize> = base.codes.as_array().map(|a| {
+        a.iter().enumerate().filter_map(|(i, r)| {
+            r.get("tz").and_then(|v| v.as_str()).map(|tz| (tz.to_string(), i))
+        }).collect()
+    }).unwrap_or_default();
+    let mut list: Vec<(String, String, f64)> = agg.into_iter().map(|(tz, (tl, area))| (tz, tl, area)).collect();
+    list.sort_by(|a, b| {
+        let oa = order.get(&a.0).copied().unwrap_or(usize::MAX);
+        let ob = order.get(&b.0).copied().unwrap_or(usize::MAX);
+        oa.cmp(&ob).then_with(|| a.0.cmp(&b.0))
+    });
+    // 颜色：按土类分组（保持重排顺序），组内面积降序取梯度档（0=最淡…n-1=最浓）
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, item) in list.iter().enumerate() {
+        if let Some(g) = groups.iter_mut().find(|(t, _)| *t == item.1) { g.1.push(i); }
+        else { groups.push((item.1.clone(), vec![i])); }
+    }
+    let mut color_pairs: Vec<(String, String)> = Vec::new();
+    for (tl, idxs) in &groups {
+        let mut sorted = idxs.clone();
+        sorted.sort_by(|&a, &b| list[b].2.partial_cmp(&list[a].2).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        for (rank, &i) in sorted.iter().enumerate() {
+            let col = crate::builtin::ramp_color(tl, rank, n)
+                .unwrap_or_else(|| base.color_of_ov(&list[i].0, "", "", tl));   // 无推荐色调的土类回退全省色
+            color_pairs.push((list[i].0.clone(), col));
+        }
+        if let Some(c) = crate::builtin::ramp_color(tl, 2, 5) {
+            color_pairs.push((tl.clone(), c));   // 土类级色（色调中档）
+        }
+    }
+    let mut codes = Vec::new();
+    for (i, item) in list.iter().enumerate() {
+        let rec = base.codes.as_array().and_then(|a| a.iter().find(|r| r.get("tz").and_then(|v| v.as_str()) == Some(item.0.as_str())));
+        codes.push(json!({
+            "code": (i + 1).to_string(),
+            "tz": item.0, "tl": item.1,
+            "yl": rec.and_then(|r| r.get("yl")).cloned().unwrap_or(json!("")),
+            "ts": rec.and_then(|r| r.get("ts")).cloned().unwrap_or(json!("")),
+        }));
+    }
+    let colors: Vec<Value> = color_pairs.into_iter().map(|(n, h)| json!({"name": n, "hex": h})).collect();
+    crate::builtin::build(json!(codes), json!(colors))
 }
 
 /// 用户导入土种编码/色带 JSON：{ "codes": [{code,tz,ts,yl,tl}], "colors": [{name,hex,level}] }
@@ -211,6 +277,7 @@ pub fn use_soil_impl(st: &mut AppState, path: &str, layer: &str,
     remap(&mut src, &mut lithology, "LITH");
     let out = json!({"fields": src.fields, "epsg": src.epsg, "count": src.feats.len()});
     st.soil_src = Some(src);
+    st.county = None;   // 换土壤图后区县编码缓存失效
     Ok(out)
 }
 
@@ -270,11 +337,11 @@ pub fn use_dem_impl(st: &mut AppState, path: &str) -> Result<Value, String> {
 /// 主计算命令：完整移植 make_sections.py 管线
 #[tauri::command]
 pub async fn compute_section(state: State<'_, SharedState>, req: Value) -> Result<Value, String> {
-    let st = state.lock().unwrap();
-    compute_impl(&st, req)
+    let mut st = state.lock().unwrap();
+    compute_impl(&mut st, req)
 }
 
-pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
+pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
     let dem = st.dem.as_ref().ok_or("未加载 DEM")?;
     let g = get()?;
 
@@ -432,6 +499,19 @@ pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
     let fvalue = s(&filter, "value");
     let max_dist = f_opt(&filter, "max_dist_m").unwrap_or(600.0);
 
+    // 编码方案：province=全省统一（默认）/ county=区县重编（按当前土壤图土种面积，缓存至换图）
+    let scheme_tbl: &crate::builtin::Builtin = if s(&req, "code_scheme") == "county" {
+        if st.county.is_none() {
+            let built = {
+                let soil = st.soil_src.as_ref().ok_or("未加载土壤图")?;
+                build_county(soil, blt(&st))
+            };
+            st.county = Some(built);
+        }
+        st.county.as_ref().unwrap()
+    } else {
+        blt(&st)
+    };
     let soil_src = st.soil_src.as_ref().ok_or("未加载土壤图")?;
     struct RawPt { x: f64, y: f64, name: String, no: Option<i64>, keep: bool, admin: String, lith: String }
     let raw_points: Vec<RawPt> = if use_custom {
@@ -496,7 +576,7 @@ pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
 
         let no = rp.no.unwrap_or(i as i64 + 1);
         let name = rp.name.clone();
-        let bl = blt(st);
+        let bl = scheme_tbl;
         let code = bl.code_of_ov(&tz).unwrap_or_default();
         let color = bl.color_of_ov(&tz, &ts, &yl, &tl);
         let admin = rp.admin.clone();
@@ -530,9 +610,9 @@ pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
                 let ts = s(r, "ts"); if !ts.is_empty() { mm.ts = ts; }
                 let yl = s(r, "yl"); if !yl.is_empty() { mm.yl = yl; }
                 let tl = s(r, "tl"); if !tl.is_empty() { mm.tl = tl; }
-                mm.color = blt(st).color_of_ov(&mm.tz, &mm.ts, &mm.yl, &mm.tl);
+                mm.color = scheme_tbl.color_of_ov(&mm.tz, &mm.ts, &mm.yl, &mm.tl);
                 if s(r, "code").is_empty() {
-                    if let Some(c) = blt(st).code_of_ov(&mm.tz) { mm.code = c; }
+                    if let Some(c) = scheme_tbl.code_of_ov(&mm.tz) { mm.code = c; }
                 }
             }
             let admin = s(r, "admin"); if !admin.is_empty() { mm.admin = admin; }
@@ -552,8 +632,8 @@ pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
                 ch: f_opt(r, "ch_km").unwrap_or(0.0) * 1000.0,
                 elev: f_opt(r, "elev"),
                 tl: s(r, "tl"), yl: s(r, "yl"), ts: s(r, "ts"), tz: tz.clone(),
-                code: if s(r, "code").is_empty() { blt(st).code_of_ov(&tz).unwrap_or_default() } else { s(r, "code") },
-                color: blt(st).color_of_ov(&tz, &s(r, "ts"), &s(r, "yl"), &s(r, "tl")),
+                code: if s(r, "code").is_empty() { scheme_tbl.code_of_ov(&tz).unwrap_or_default() } else { s(r, "code") },
+                color: scheme_tbl.color_of_ov(&tz, &s(r, "ts"), &s(r, "yl"), &s(r, "tl")),
                 admin: s(r, "admin"), lith: s(r, "lith"),
             });
         }
@@ -874,7 +954,8 @@ pub fn map_overview_impl(st: &AppState, grid_w: Option<u32>) -> Result<Value, St
 pub async fn builtin_tables(state: State<'_, SharedState>) -> Result<Value, String> {
     let st = state.lock().unwrap();
     let b = blt(&st);
-    Ok(json!({"codes": b.codes, "colors": b.colors, "tl_names": b.tl_names}))
+    let county = st.county.as_ref().map(|c| json!({"codes": c.codes, "colors": c.colors}));
+    Ok(json!({"codes": b.codes, "colors": b.colors, "tl_names": b.tl_names, "county": county}))
 }
 
 #[tauri::command]
