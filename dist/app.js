@@ -1547,7 +1547,7 @@ function renderFigure(res) {
       svg.appendChild(el("line", { x1: left - 5, x2: left, y1: y, y2: y, stroke: "#444", "stroke-width": 1 }));
       svg.appendChild(el("text", { x: left - 9, y: y + 4.5, "text-anchor": "end", "font-size": 14.6, fill: "#333" }, String(Math.round(t))));
     });
-    const yl = el("text", { x: 0, y: 0, "font-size": 15.3, fill: "#333", "text-anchor": "middle" }, "高程 (m)");
+    const yl = el("text", { x: 0, y: 0, "font-size": 13.2, fill: "#333", "text-anchor": "middle" }, "高程 (m)");
     yl.setAttribute("transform", `translate(${left - 52 * PX}, ${topY + terrainH / 2}) rotate(-90)`);
     svg.appendChild(yl);
   }
