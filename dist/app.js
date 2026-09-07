@@ -37,6 +37,12 @@ function parentOf(tz, tl) {
   if (/泥质/.test(n)) return "泥岩/页岩风化物";
   return SOIL_PARENT[tl] || "";
 }
+/** 断面点表格同号点的字段值（地貌/母岩等：表格有值优先，自动推导兜底） */
+function tblVal(no, key) {
+  const r = S.table.find(t => String(t.no) === String(no));
+  const v = r && r[key];
+  return v == null ? "" : String(v);
+}
 /** 由土种名解析剖面层厚调制（薄/中/厚腐 × 薄/中/厚层） */
 function profileSequence(tl, yl, tz) {
   let seq = SOIL_PROFILES[tl];
@@ -79,17 +85,17 @@ const S = {
       { elev: 1600, name: "黄棕壤带", key: "黄棕壤" },
     ],
     rows: [
-      { key: "code", label: "土种编号", on: true },
-      { key: "tz", label: "三普土种", on: true },
-      { key: "profile", label: "剖面构型", on: false },
-      { key: "geo", label: "地貌类型", on: false },
-      { key: "ts", label: "土属", on: false },
-      { key: "yl", label: "亚类", on: false },
-      { key: "tl", label: "土类", on: false },
-      { key: "admin", label: "行政区", on: false },
-      { key: "lith", label: "母岩母质", on: false },
+      { key: "code", label: "土种编号", on: true, band: true },
+      { key: "tz", label: "三普土种", on: true, band: true },
+      { key: "profile", label: "剖面构型", on: false, band: true },
+      { key: "geo", label: "地貌类型", on: false, band: true },
+      { key: "ts", label: "土属", on: false, band: true },
+      { key: "yl", label: "亚类", on: false, band: true },
+      { key: "tl", label: "土类", on: false, band: true },
+      { key: "admin", label: "行政区", on: false, band: true },
+      { key: "lith", label: "母岩母质", on: false, band: true },
     ],
-    show: { names: true, elev: true, zones: true, compass: true, axis: true },
+    show: { names: true, elev: true, zones: true, compass: true, axis: true, elevAxis: true },
     sourceMode: "draw",   // 断面数据来源：draw=自绘当前剖面 / import=导入线点文件
     boundsOverride: null,   // 手动分段边界（拖拽产生；null = 自动 maximin）
     labelOffsets: null,     // 地名手动放置偏移 { [no]: {dx,dy} }
@@ -377,6 +383,17 @@ async function compute(manual = false) {
     S.result = res;
     mergeTable(res);
     renderFigure(res);
+    // 默认开启跨格合并的行：首次生成（渲染上下文就绪后）自动初始化分段；已有分段仅刷新文字
+    let bandInit = false;
+    if (!S.cfg.rowBands) S.cfg.rowBands = {};
+    S.cfg.rows.forEach(r => {
+      if (r.band && !S.cfg.rowBands[r.key]) {
+        const sg = initBandSegs(r);
+        if (sg) { S.cfg.rowBands[r.key] = sg; bandInit = true; }
+      }
+    });
+    Object.keys(S.cfg.rowBands).forEach(refreshBandTexts);   // band 段文字跟随表格/推导刷新
+    if (bandInit) renderFigure(res);
     $("previewEmpty").style.display = "none";
     statusRight(`断面 ${res.total_km.toFixed(2)} km · ${res.sample_count} 采样点 · ${res.points.length} 断面点 · VE ×${res.ve}`);
     if (manual) log(`断面计算完成：${res.total_km.toFixed(2)}km，方位 ${res.wind}${res.azimuth.toFixed(0)}°${res.flip ? "（已翻转）" : ""}`);
@@ -831,6 +848,7 @@ function buildSidebar() {
         <label class="chip"><input type="checkbox" id="showZones" ${c.show.zones ? "checked" : ""}/>界线</label>
         <label class="chip"><input type="checkbox" id="showCompass" ${c.show.compass ? "checked" : ""}/>指针</label>
         <label class="chip"><input type="checkbox" id="showAxis" ${c.show.axis ? "checked" : ""}/>距离轴</label>
+        <label class="chip"><input type="checkbox" id="showElevAxis" ${c.show.elevAxis ? "checked" : ""}/>高程轴</label>
       </div>
       <div class="mini" style="margin:2px 0 6px">下方表格行：勾选显示 · ⠿ 拖动排序（“土种编号”渲染于色带内）</div>
       <div class="rows-list" id="rowsList">${c.rows.map((r, i) => rowItemHtml(r, i)).join("")}</div>`, true),
@@ -887,6 +905,29 @@ function rowItemHtml(r, i) {
   </div>`;
 }
 
+/* band 行分段初始化：按逐格显示值（表格优先、推导兜底）相邻同值合并；无可初始化返回 null */
+function initBandSegs(row) {
+  const svg = $("figure"), ctx = svg && svg.__dragCtx;
+  const res = S.result;
+  if (!ctx || !res || !Array.isArray(res.segments) || res.segments.length < 1) return null;
+  const B = ctx.B;
+  const valOf = (s) => {
+    if (row.key === "lith") return tblVal(s.no, "lith") || s.lith || parentOf(s.tz, s.tl) || "—";
+    if (row.key === "geo") return tblVal(s.no, "geo") || s.geo || "—";
+    if (row.key === "profile") return `${s.tl || ""}|${s.yl || ""}|${s.tz || ""}`;   // 构型序列指纹（同序列合并）
+    const v = s[row.key];
+    return v == null || v === "" ? "—" : String(v);
+  };
+  const segs = [];
+  res.segments.forEach((s, i) => {
+    const v = valOf(s);
+    const last = segs[segs.length - 1];
+    if (last && last.text === v) last.b = B[i + 1];   // 相邻同值合并（跨土种）
+    else segs.push({ a: B[i], b: B[i + 1], text: v, color: s.color, tl: s.tl, yl: s.yl, tz: s.tz, no: s.no });
+  });
+  return segs;
+}
+
 /* 开/关行级独立分段：开启时按当前逐格值相邻同值合并初始化条带 */
 function toggleBand(row, on) {
   const c = S.cfg;
@@ -897,32 +938,33 @@ function toggleBand(row, on) {
     log(`「${row.label}」已恢复逐格显示`);
     return;
   }
-  const svg = $("figure"), ctx = svg && svg.__dragCtx;
-  const res = S.result;
-  if (!ctx || !res || !Array.isArray(res.segments) || res.segments.length < 1) {
+  if (!$("figure") || !$("figure").__dragCtx || !S.result) {
     log("请先生成断面，再开启跨土种分段");
     row.band = false;
     buildSidebar();
     return;
   }
-  const B = ctx.B;
-  const valOf = (s) => {
-    if (row.key === "lith") return s.lith || parentOf(s.tz, s.tl) || "—";
-    if (row.key === "profile") return `${s.tl || ""}|${s.yl || ""}|${s.tz || ""}`;   // 构型序列指纹（同序列合并）
-    const v = s[row.key];
-    return v == null || v === "" ? "—" : String(v);
-  };
-  const segs = [];
-  res.segments.forEach((s, i) => {
-    const v = valOf(s);
-    const last = segs[segs.length - 1];
-    if (last && last.text === v) last.b = B[i + 1];   // 相邻同值合并（跨土种）
-    else segs.push({ a: B[i], b: B[i + 1], text: v, color: s.color, tl: s.tl, yl: s.yl, tz: s.tz });
-  });
+  const segs = initBandSegs(row);
+  if (!segs) return;
   if (!c.rowBands) c.rowBands = {};
   c.rowBands[row.key] = segs;
   log(`「${row.label}」跨土种分段已开启：自动合并为 ${segs.length} 段（边界可拖动 · 双击边界合并 · 双击段内拆分）`);
   buildSidebar();
+}
+
+/* band 段文字跟随数据源刷新：表格值优先、自动推导兜底（保留用户拖动的边界几何） */
+function refreshBandTexts(key) {
+  const segsB = (S.cfg.rowBands || {})[key];
+  if (!Array.isArray(segsB) || !S.result) return;
+  segsB.forEach(sg => {
+    if (sg.no == null) return;
+    const p = S.result.points.find(q => String(q.no) === String(sg.no)) || {};
+    let v = "";
+    if (key === "lith") v = tblVal(sg.no, "lith") || p.lith || parentOf(sg.tz, sg.tl) || "";
+    else if (key === "geo") v = tblVal(sg.no, "geo") || p.geo || "";
+    else v = tblVal(sg.no, key) || p[key] || "";
+    if (v) sg.text = v;
+  });
 }
 
 function currentProfile() {
@@ -1124,7 +1166,7 @@ function wireSidebar() {
   });
   const bindShow = (id, key) => $(id).onchange = e => { c.show[key] = e.target.checked; if (S.result) renderFigure(S.result); };
   bindShow("showNames", "names"); bindShow("showElev", "elev");
-  bindShow("showZones", "zones"); bindShow("showCompass", "compass"); bindShow("showAxis", "axis");
+  bindShow("showZones", "zones"); bindShow("showCompass", "compass"); bindShow("showAxis", "axis"); bindShow("showElevAxis", "elevAxis");
   // 版式
   if (!c.layout) c.layout = {};
   // 版式绑定：滑块/数字输入双向同步（数字框 id = 滑块 id + N）
@@ -1216,6 +1258,13 @@ function renderPointsTable() {
       inp.__t = setTimeout(() => {
         if (inp.__snap) { pushUndo(inp.__snap); inp.__snap = null; }
         if (k === "ch" && v > 0 && S.useCustom) autoFillRowFromChainage(i, v);
+        // band 行字段被编辑：值序列已变，按新值重新自动分段（数据驱动）
+        const rw = S.cfg.rows.find(r => r.key === k);
+        if (rw && rw.band && $("figure") && $("figure").__dragCtx) {
+          const sg2 = initBandSegs(rw);
+          if (sg2) { if (!S.cfg.rowBands) S.cfg.rowBands = {}; S.cfg.rowBands[k] = sg2; }
+        }
+        if (S.result) renderFigure(S.result);
         computeDebounced();
       }, 600);
     };
@@ -1454,7 +1503,7 @@ function renderFigure(res) {
     if (row.key === "tz") return Math.max(base, tzRowH);
     return base;
   };
-  const tableH = stripH + 8 + rowsOn.reduce((a, r) => a + rowHOf(r), 0) + 16;
+  const tableH = stripH + rowsOn.reduce((a, r) => a + rowHOf(r), 0) + 8;   // 行区紧贴色带，底线紧贴末行（btmY=行区底）
   const figH = topY + terrainH + axisGap + tableH + 26;
 
   svg.setAttribute("viewBox", `0 0 ${figW} ${figH}`);
@@ -1467,7 +1516,7 @@ function renderFigure(res) {
   /* --- 行级独立分段（band 行）：各行可拥有与土种格不对齐的条带 --- */
   const bandOf = (row) => (row.band && Array.isArray((c.rowBands || {})[row.key]) && c.rowBands[row.key].length ? c.rowBands[row.key] : null);
   const rowYs = new Map();
-  { let acc = tableTop + stripH + 8; rowsOn.forEach(r => { rowYs.set(r.key, { y: acc, h: rowHOf(r) }); acc += rowHOf(r); }); }
+  { let acc = tableTop + stripH; rowsOn.forEach(r => { rowYs.set(r.key, { y: acc, h: rowHOf(r) }); acc += rowHOf(r); }); }
   const bandSpans = rowsOn.map(r => ({ row: r, yv: rowYs.get(r.key) })).filter(x => bandOf(x.row));
 
   /* --- 地形剖面（渐变） --- */
@@ -1483,23 +1532,25 @@ function renderFigure(res) {
   dPath += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
   svg.appendChild(el("path", { d: dPath, fill: "url(#terrGrad)", stroke: "#3f3a36", "stroke-width": 1.5 }));
 
-  /* --- 高程刻度与网格 --- */
-  const eSpan = res.elev_max - res.elev_min;
-  const tickStep = eSpan < 400 ? 100 : (eSpan < 1200 ? 200 : 250);
-  const ticks = [];
-  for (let t = res.y_base; t <= res.elev_max + tickStep; t += tickStep) {
-    if (t * ve <= yTop) ticks.push(t);
+  /* --- 高程刻度与网格（可在制图要素中开关） --- */
+  if (c.show.elevAxis) {
+    const eSpan = res.elev_max - res.elev_min;
+    const tickStep = eSpan < 400 ? 100 : (eSpan < 1200 ? 200 : 250);
+    const ticks = [];
+    for (let t = res.y_base; t <= res.elev_max + tickStep; t += tickStep) {
+      if (t * ve <= yTop) ticks.push(t);
+    }
+    ticks.shift();
+    ticks.forEach(t => {
+      const y = ypx(t * ve);
+      svg.appendChild(el("line", { x1: left, x2: right, y1: y, y2: y, stroke: "#cfcfcf", "stroke-width": 1, "stroke-dasharray": "1,3" }));
+      svg.appendChild(el("line", { x1: left - 5, x2: left, y1: y, y2: y, stroke: "#444", "stroke-width": 1 }));
+      svg.appendChild(el("text", { x: left - 9, y: y + 4.5, "text-anchor": "end", "font-size": 14.6, fill: "#333" }, String(Math.round(t))));
+    });
+    const yl = el("text", { x: 0, y: 0, "font-size": 15.3, fill: "#333", "text-anchor": "middle" }, "高程 (m)");
+    yl.setAttribute("transform", `translate(${left - 52 * PX}, ${topY + terrainH / 2}) rotate(-90)`);
+    svg.appendChild(yl);
   }
-  ticks.shift();
-  ticks.forEach(t => {
-    const y = ypx(t * ve);
-    svg.appendChild(el("line", { x1: left, x2: right, y1: y, y2: y, stroke: "#cfcfcf", "stroke-width": 1, "stroke-dasharray": "1,3" }));
-    svg.appendChild(el("line", { x1: left - 5, x2: left, y1: y, y2: y, stroke: "#444", "stroke-width": 1 }));
-    svg.appendChild(el("text", { x: left - 9, y: y + 4.5, "text-anchor": "end", "font-size": 14.6, fill: "#333" }, String(Math.round(t))));
-  });
-  const yl = el("text", { x: 0, y: 0, "font-size": 15.3, fill: "#333", "text-anchor": "middle" }, "高程 (m)");
-  yl.setAttribute("transform", `translate(${left - 52 * PX}, ${topY + terrainH / 2}) rotate(-90)`);
-  svg.appendChild(yl);
 
   /* --- 地带性界线 --- */
   if (c.show.zones) {
@@ -1698,7 +1749,7 @@ function renderFigure(res) {
         }
       }
       const v = s.tz || "—";
-      let ryAcc = stripTop + stripH + 8;
+      let ryAcc = stripTop + stripH;
       rowsOn.forEach((row) => {
         const rh = rowHOf(row);
         const ry = ryAcc;
@@ -1729,7 +1780,8 @@ function renderFigure(res) {
             ({ lines, fs: fs2 } = tzFit(v, x1 - x0));
           } else {
             let txt;
-            if (row.key === "lith") txt = s.lith || parentOf(s.tz, s.tl) || "—";
+            if (row.key === "lith") txt = tblVal(s.no, "lith") || s.lith || parentOf(s.tz, s.tl) || "—";
+            else if (row.key === "geo") txt = tblVal(s.no, "geo") || s.geo || "—";
             else txt = s[row.key] || "—";
             fs2 = Math.max(6, Math.min(row.key === "lith" ? 13.5 : 15.3, (x1 - x0 - 8) / String(txt).length));
             lines = [String(txt)];
@@ -1768,14 +1820,16 @@ function renderFigure(res) {
       });
     }
     const btmY = tableTop + tableH - 8;
-    // 共享边界可见线：不穿色带行（色带格以白描边自分隔），band 行区间内断开（行内分段线独立表达）
+    // 共享边界可见线只在行区内绘制：不穿色带行（色带格白描边自分隔）、
+    // 不穿色带下 8px 间隙与行区底部 8px 间隙（避免底稿竖线在段块外透出）
+    const rowTop = stripTop + stripH;
+    const rowBot = rowTop + rowsOn.reduce((a, r) => a + rowHOf(r), 0);
     const solidSpans = (() => {
-      const yStart = stripTop + stripH;
-      if (!bandSpans.length) return [[yStart, btmY]];
+      if (!bandSpans.length) return rowBot > rowTop + 0.5 ? [[rowTop, rowBot]] : [];
       const cuts = bandSpans.map(bs => [bs.yv.y, bs.yv.y + bs.yv.h]).sort((p, q) => p[0] - q[0]);
-      const spans = []; let cur = yStart;
+      const spans = []; let cur = rowTop;
       for (const [y0, y1] of cuts) { if (y0 > cur + 0.5) spans.push([cur, y0]); cur = Math.max(cur, y1); }
-      if (btmY > cur + 0.5) spans.push([cur, btmY]);
+      if (rowBot > cur + 0.5) spans.push([cur, rowBot]);
       return spans;
     })();
     dispB.slice(1, -1).forEach((b, k) => {
@@ -1817,8 +1871,6 @@ function renderFigure(res) {
           }
           if (selB) svg.appendChild(el("rect", { x: x0 + 1.5, y: ry + 1.5, width: x1 - x0 - 3, height: rh - 3, fill: "none", stroke: "#c0392b", "stroke-width": 2.2, "pointer-events": "none" }));
         } else {
-          // 段块交替不透明底色：填满行区，遮蔽底稿残线
-          svg.appendChild(el("rect", { x: x0, y: ry, width: x1 - x0, height: rh, fill: k % 2 ? "#efe6d8" : "#f8f3ea", "pointer-events": "none" }));
           if (selB) svg.appendChild(el("rect", { x: x0 + 1.5, y: ry + 1.5, width: x1 - x0 - 3, height: rh - 3, fill: "none", stroke: "#c0392b", "stroke-width": 2.2, "pointer-events": "none" }));
           const v = sg.text == null || sg.text === "" ? "—" : String(sg.text);
           const fit = tzFit(v, x1 - x0);
@@ -1839,7 +1891,7 @@ function renderFigure(res) {
     });
     svg.appendChild(el("line", { x1: left, x2: right, y1: stripTop, y2: stripTop, stroke: "#666", "stroke-width": 1.2 }));
     svg.appendChild(el("line", { x1: left, x2: right, y1: stripTop + stripH, y2: stripTop + stripH, stroke: "#666", "stroke-width": 1.2 }));
-    let ryAcc2 = stripTop + stripH + 8;
+    let ryAcc2 = stripTop + stripH;
     rowsOn.forEach((row) => {
       const rh = rowHOf(row);
       const ry = ryAcc2;
