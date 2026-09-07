@@ -331,7 +331,7 @@ pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
     let n_ext = if ext_req > 0.0 {
         ((ext_req).clamp(2.0 * step, 60000.0) / step).round() as usize
     } else {
-        (((total * 0.03).clamp(2.0 * step, 1500.0)) / step).round() as usize
+        (((total * 0.01).clamp(2.0 * step, 500.0)) / step).round() as usize   // 自适应：每端 1%、上限 500m
     };
     let n_ext = n_ext.clamp(2, (n_orig / 3).max(2));
     let mut stations_x: Vec<(f64, f64, f64)> = Vec::with_capacity(n_orig + 2 * n_ext);
@@ -358,9 +358,28 @@ pub fn compute_impl(st: &AppState, req: Value) -> Result<Value, String> {
     } else {
         stations_x.extend(stations.iter().copied());
     }
-    let stations = stations_x;
+    let mut stations = stations_x;
     let mut dem_pts: Vec<(f64, f64)> = stations.iter().map(|(_, x, y)| (*x, *y)).collect();
     transform_xy(g, line_epsg, dem.epsg, &mut dem_pts)?;
+
+    // 延伸收缩：延伸点须落在 DEM 有效范围内（出界点采不到高程，用上一值会产生水平假平线）。
+    // 从原始线端向外逐点检测，遇到首个无效点即截断（连续有效前缀），两端对称取 min（前端 xpx 左右对称）。
+    let n_all = stations.len();
+    let mut k_eff = n_ext;
+    if n_ext > 0 && n_orig >= 2 && n_all >= n_orig + 2 * n_ext {
+        let mut kl = 0usize;
+        while kl < n_ext && dem_sample(dem, dem_pts[n_ext - 1 - kl].0, dem_pts[n_ext - 1 - kl].1).is_some() { kl += 1; }
+        let mut kr = 0usize;
+        while kr < n_ext && dem_sample(dem, dem_pts[n_ext + n_orig + kr].0, dem_pts[n_ext + n_orig + kr].1).is_some() { kr += 1; }
+        k_eff = kl.min(kr);
+    }
+    if k_eff < n_ext {
+        let start = n_ext - k_eff;
+        let end = n_all - (n_ext - k_eff);
+        stations = stations[start..end].to_vec();
+        dem_pts = dem_pts[start..end].to_vec();
+    }
+    let n_ext = k_eff;
 
     let mut elev: Vec<f64> = Vec::with_capacity(stations.len());
     for p in &dem_pts {

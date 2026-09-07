@@ -74,7 +74,7 @@ const S = {
   dem: { path: "", meta: null },
   cfg: {
     lineIndex: 0,
-    sampleStep: 50, smoothing: 5, extendsM: 0,
+    sampleStep: 20, smoothing: 5, extendsM: 0,
     orientation: "high_left", veAuto: true, ve: 10,
     ptNameField: "", ptNoField: "",
     filterMode: "field", filterField: "", filterValue: "", filterDist: 600,
@@ -328,7 +328,7 @@ function buildReq() {
   const c = S.cfg;
   return {
     use_custom: !!S.useCustom,
-    sample_interval_m: +c.sampleStep || 50,
+    sample_interval_m: +c.sampleStep || 20,
     extend_m: +c.extendsM || 0,
     smoothing: +c.smoothing || 0,
     orientation: c.orientation,
@@ -838,7 +838,7 @@ function buildSidebar() {
       <div class="row"><label>断面定向</label><span class="fill">${selectHtml("cfgOri", [
         { v: "high_left", t: "左高右低（默认）" }, { v: "high_right", t: "左低右高" }, { v: "as_line", t: "按线方向" }], c.orientation)}</span></div>
       <div class="row"><label>采样间距 m</label><input type="number" id="cfgStep" value="${c.sampleStep}" min="1"/><span class="mini">越小越精细</span></div>
-      <div class="row"><label>两端外延 m</label><input type="number" id="cfgExt" value="${c.extendsM}" min="0" title="0 = 按线长自适应（每端3%）"/><span class="mini">0=自适应</span></div>
+      <div class="row"><label>两端外延 m</label><input type="number" id="cfgExt" value="${c.extendsM}" min="0" title="0 = 按线长自适应（每端1%，上限500m，超出DEM范围自动收缩）"/><span class="mini">0=自适应</span></div>
       <div class="row"><label>平滑窗口</label><input type="number" id="cfgSmooth" value="${c.smoothing}" min="0"/></div>`, true),
 
     group("⑦ 制图要素", `
@@ -1550,11 +1550,14 @@ function renderFigure(res) {
     gBase.appendChild(el("stop", { offset: "0%", "stop-color": LAY.terr2 || "#ccc7be" }));
     gBase.appendChild(el("stop", { offset: "100%", "stop-color": LAY.terr3 || "#e5e2db" }));
     defs.appendChild(gBase);
-    // 表层色带渐变（每段：土种色 → 半透明，厚度内垂直衰减）
+    // 表层色带渐变（每段：顶部薄层实色，向下四段过渡至完全透明，与灰底无级融合）
     terrSegs.forEach((sg, i) => {
+      const col = sg.color || "#b0a99f";
       const g = el("linearGradient", { id: "terrG" + i, x1: 0, y1: 0, x2: 0, y2: 1 });
-      g.appendChild(el("stop", { offset: "0%", "stop-color": sg.color || "#b0a99f" }));
-      g.appendChild(el("stop", { offset: "100%", "stop-color": sg.color || "#b0a99f", "stop-opacity": "0.45" }));
+      g.appendChild(el("stop", { offset: "0%", "stop-color": col, "stop-opacity": "1" }));
+      g.appendChild(el("stop", { offset: "35%", "stop-color": col, "stop-opacity": "0.82" }));
+      g.appendChild(el("stop", { offset: "70%", "stop-color": col, "stop-opacity": "0.36" }));
+      g.appendChild(el("stop", { offset: "100%", "stop-color": col, "stop-opacity": "0" }));
       defs.appendChild(g);
     });
   }
@@ -1574,7 +1577,7 @@ function renderFigure(res) {
       const t = (kk - stations[i][0]) / Math.max(stations[i + 1][0] - stations[i][0], 1e-9);
       return disp[i] + t * (disp[i + 1] - disp[i]);
     };
-    const D = Math.max(46, Math.round(terrainH * 0.16));   // 表层色带厚度
+    const D = Math.max(42, Math.round(terrainH * 0.13));   // 表层过渡带总厚度（顶部实色约 35%，底缘透明）
     // 段范围：首末段扩展覆盖两端外延区；左右各重叠 0.7px 消除相邻段抗锯齿白缝
     const segRange = terrSegs.map((sg, i) => ({
       a: i === 0 ? Math.min(sg.a, kmLo) : sg.a,
@@ -3078,10 +3081,19 @@ if (__bt) {
   let __btT = null;
   __bt.oninput = () => {
     const bar = $("cellBar");
-    const segsB = (S.cfg.rowBands || {})[bar.dataset.band];
+    const bKey = bar.dataset.band;
+    const segsB = (S.cfg.rowBands || {})[bKey];
     const k = +bar.dataset.bandK;
     if (!Array.isArray(segsB) || !(k >= 0) || k >= segsB.length) return;
     segsB[k].text = __bt.value;
+    // 土种编号行：新编号 → 编码表土类 → 色带色同步（拆分改码后色带随之更新）
+    if (bKey === "code") {
+      const rec = (S.builtin.codes || []).find(r => String(r.code) === String(__bt.value).trim());
+      if (rec) {
+        const col = (S.builtin.colorByName || {})[rec.tl];
+        if (col) segsB[k].color = col;
+      }
+    }
     clearTimeout(__btT);
     __btT = setTimeout(() => renderFigure(S.result), 180);   // 去抖即时渲染，输入跟手
   };

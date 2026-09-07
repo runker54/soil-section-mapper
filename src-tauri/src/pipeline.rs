@@ -242,8 +242,9 @@ pub fn densify_full(parts: &[Vec<(f64, f64)>], step: f64) -> Vec<(f64, f64, f64)
             cum += seglen;
         }
     }
-    if let Some(last) = out.last() {
-        out.push(*last);
+    // 补线终点（内循环 k in 0..n 不含 t=1；补终点而非重复上一点——重复点会使末端外延方向向量为零，外延点原地踏步成水平线）
+    if let Some(&(ex, ey)) = parts.iter().flatten().last() {
+        out.push((cum, ex, ey));
     }
     out
 }
