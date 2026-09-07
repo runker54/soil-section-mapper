@@ -88,6 +88,8 @@ const S = {
     labelOffsets: null,     // 地名手动放置偏移 { [no]: {dx,dy} }
     pointerPos: null,       // 方向指针手动位置
     cellSel: null,          // 当前选中格子
+    rowBands: null,         // 行级独立分段 { [rowKey]: [{a,b,text},...] }（与土种格不对齐；相邻同值合并初始化）
+    bandSel: null,          // 当前选中的行分段 { key, k }
     layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
   },
   table: [],
@@ -869,12 +871,51 @@ function zoneRowHtml(z, i) {
   </div><datalist id="tlNames">${(S.builtin.tlNames || []).map(t => `<option value="${esc(t)}"/>`).join("")}</datalist>`;
 }
 function rowItemHtml(r, i) {
+  const bandable = r.key !== "code" && r.key !== "profile";
   return `<div class="rrow" data-i="${i}">
     <span class="gripd" title="拖动调整顺序">⠿</span>
     <input type="checkbox" class="r-on" ${r.on ? "checked" : ""}/>
     <span class="lbl">${r.label}</span>
     <input type="number" class="r-rh" min="20" max="200" step="2" value="${r.rh || ""}" placeholder="高" title="本行行高 px（留空用默认）"/>
+    ${bandable ? `<input type="checkbox" class="r-band" ${r.band ? "checked" : ""} title="跨土种分段：相邻同值自动合并为一条（如地貌类型往往跨多个土种），边界可拖动、双击合并/拆分，与土种格不对齐"/>` : ""}
   </div>`;
+}
+
+/* 开/关行级独立分段：开启时按当前逐格值相邻同值合并初始化条带 */
+function toggleBand(row, on) {
+  const c = S.cfg;
+  row.band = !!on;
+  if (!on) {
+    if (c.rowBands) delete c.rowBands[row.key];
+    if (c.bandSel && c.bandSel.key === row.key) { c.bandSel = null; hideCellBar(); }
+    log(`「${row.label}」已恢复逐格显示`);
+    return;
+  }
+  const svg = $("figure"), ctx = svg && svg.__dragCtx;
+  const res = S.result;
+  if (!ctx || !res || !Array.isArray(res.segments) || res.segments.length < 1) {
+    log("请先生成断面，再开启跨土种分段");
+    row.band = false;
+    buildSidebar();
+    return;
+  }
+  const B = ctx.B;
+  const valOf = (s) => {
+    if (row.key === "lith") return s.lith || SOIL_PARENT[s.tl] || "—";
+    const v = s[row.key];
+    return v == null || v === "" ? "—" : String(v);
+  };
+  const segs = [];
+  res.segments.forEach((s, i) => {
+    const v = valOf(s);
+    const last = segs[segs.length - 1];
+    if (last && last.text === v) last.b = B[i + 1];   // 相邻同值合并（跨土种）
+    else segs.push({ a: B[i], b: B[i + 1], text: v });
+  });
+  if (!c.rowBands) c.rowBands = {};
+  c.rowBands[row.key] = segs;
+  log(`「${row.label}」跨土种分段已开启：自动合并为 ${segs.length} 段（边界可拖动 · 双击边界合并 · 双击段内拆分）`);
+  buildSidebar();
 }
 
 function currentProfile() {
@@ -1053,6 +1094,11 @@ function wireSidebar() {
     if (rhInp) rhInp.onchange = () => {
       const v = +rhInp.value;
       c.rows[i].rh = (rhInp.value === "" || !isFinite(v)) ? 0 : Math.max(20, Math.min(200, v));
+      if (S.result) renderFigure(S.result);
+    };
+    const bandInp = row.querySelector(".r-band");
+    if (bandInp) bandInp.onchange = e => {
+      toggleBand(c.rows[i], e.target.checked);
       if (S.result) renderFigure(S.result);
     };
   });
@@ -1411,6 +1457,12 @@ function renderFigure(res) {
   const xpx = (km) => left + (km + ext) / spanKm * axesW;
   const ypx = (d) => topY + (yTop - d) / (yTop - dispBase) * terrainH;
 
+  /* --- 行级独立分段（band 行）：各行可拥有与土种格不对齐的条带 --- */
+  const bandOf = (row) => (row.band && Array.isArray((c.rowBands || {})[row.key]) && c.rowBands[row.key].length ? c.rowBands[row.key] : null);
+  const rowYs = new Map();
+  { let acc = tableTop + stripH + 8; rowsOn.forEach(r => { rowYs.set(r.key, { y: acc, h: rowHOf(r) }); acc += rowHOf(r); }); }
+  const bandSpans = rowsOn.map(r => ({ row: r, yv: rowYs.get(r.key) })).filter(x => bandOf(x.row));
+
   /* --- 地形剖面（渐变） --- */
   const defs = el("defs", {});
   const grad = el("linearGradient", { id: "terrGrad", x1: 0, y1: 0, x2: 0, y2: 1 });
@@ -1641,6 +1693,7 @@ function renderFigure(res) {
         const rh = rowHOf(row);
         const ry = ryAcc;
         ryAcc += rh;
+        if (bandOf(row)) return;   // band 行在格循环外按行独立绘制（分段与土种格不对齐）；行高已记账
         if (row.key === "profile") {
           const seq = profileSequence(s.tl, s.yl, s.tz);
           if (seq && x1 > x0 + 1) {
@@ -1683,11 +1736,49 @@ function renderFigure(res) {
       });
     });
     const btmY = tableTop + tableH - 8;
+    // 共享边界可见线在 band 行区间内断开（行内分段线独立表达，避免两套竖线交叉）
+    const solidSpans = (() => {
+      if (!bandSpans.length) return [[stripTop, btmY]];
+      const cuts = bandSpans.map(bs => [bs.yv.y, bs.yv.y + bs.yv.h]).sort((p, q) => p[0] - q[0]);
+      const spans = []; let cur = stripTop;
+      for (const [y0, y1] of cuts) { if (y0 > cur + 0.5) spans.push([cur, y0]); cur = Math.max(cur, y1); }
+      if (btmY > cur + 0.5) spans.push([cur, btmY]);
+      return spans;
+    })();
     dispB.slice(1, -1).forEach((b, k) => {
       const j = k + 1, x = xpx0(b);
       const hintB = svg.__dragCtx && svg.__dragCtx.dragHint && svg.__dragCtx.dragHint.type === "bound" && svg.__dragCtx.dragHint.j === j;
-      svg.appendChild(el("line", { x1: x, x2: x, y1: stripTop, y2: btmY, stroke: hintB ? "#c0392b" : "#888", "stroke-width": hintB ? 2.4 : 1, "pointer-events": "none" }));
+      solidSpans.forEach(([y0, y1]) => svg.appendChild(el("line", { x1: x, x2: x, y1: y0, y2: y1, stroke: hintB ? "#c0392b" : "#888", "stroke-width": hintB ? 2.4 : 1, "pointer-events": "none" })));
       svg.appendChild(el("line", { x1: x, x2: x, y1: stripTop, y2: btmY, stroke: "rgba(192,57,43,0)", "stroke-width": 16, "class": "bound-hit", "pointer-events": "all", "data-drag": "bound", "data-j": j, style: "cursor:ew-resize" }));
+    });
+    /* --- band 行绘制：跨土种条带（底色 + 段 + 文字 + 行内边界线） --- */
+    bandSpans.forEach(({ row, yv }) => {
+      const segsB = bandOf(row);
+      const rh = yv.h, ry = yv.y;
+      svg.appendChild(el("rect", { x: left, y: ry, width: right - left, height: rh, fill: "rgba(140,100,60,0.06)", "pointer-events": "none" }));
+      segsB.forEach((sg, k) => {
+        let x0 = xpx(Math.max(0, Math.min(sg.a ?? 0, totalKm)));
+        let x1 = xpx(Math.max(0, Math.min(sg.b ?? totalKm, totalKm)));
+        if (k === 0) x0 = left;
+        if (k === segsB.length - 1) x1 = right;
+        if (x1 <= x0 + 0.5) return;
+        const selB = c.bandSel && c.bandSel.key === row.key && c.bandSel.k === k;
+        if (selB) svg.appendChild(el("rect", { x: x0 + 1.5, y: ry + 1.5, width: x1 - x0 - 3, height: rh - 3, fill: "none", stroke: "#c0392b", "stroke-width": 2.2, "pointer-events": "none" }));
+        svg.appendChild(el("rect", { x: x0, y: ry, width: x1 - x0, height: rh, fill: "transparent", "data-drag": "bcell", "data-bk": row.key, "data-k": k, "pointer-events": "all", style: "cursor:pointer" }));
+        const v = sg.text == null || sg.text === "" ? "—" : String(sg.text);
+        const fit = tzFit(v, x1 - x0);
+        const fs2 = Math.min(fit.fs, 15.3);
+        const lh2 = fs2 * 1.18;
+        const yFirst = ry + rh / 2 - (fit.lines.length - 1) * lh2 / 2 + fs2 * 0.36;
+        const e = el("text", { x: (x0 + x1) / 2, y: yFirst, "font-size": fs2.toFixed(1), fill: "#111", "text-anchor": "middle", "pointer-events": "none" });
+        fit.lines.forEach((line, li2) => e.appendChild(el("tspan", { x: (x0 + x1) / 2, dy: li2 === 0 ? 0 : lh2 }, line)));
+        svg.appendChild(e);
+        if (k >= 1) {
+          const hintBB = svg.__dragCtx && svg.__dragCtx.dragHint && svg.__dragCtx.dragHint.type === "bbound" && svg.__dragCtx.dragHint.key === row.key && svg.__dragCtx.dragHint.i === k;
+          svg.appendChild(el("line", { x1: x0, x2: x0, y1: ry, y2: ry + rh, stroke: hintBB ? "#c0392b" : "#8a5a2a", "stroke-width": hintBB ? 2.6 : 1.3, "pointer-events": "none" }));
+          svg.appendChild(el("line", { x1: x0, x2: x0, y1: ry, y2: ry + rh, stroke: "rgba(192,57,43,0)", "stroke-width": 16, "pointer-events": "all", "data-drag": "bbound", "data-bk": row.key, "data-k": k, style: "cursor:ew-resize" }));
+        }
+      });
     });
     svg.appendChild(el("line", { x1: left, x2: right, y1: stripTop, y2: stripTop, stroke: "#666", "stroke-width": 1.2 }));
     svg.appendChild(el("line", { x1: left, x2: right, y1: stripTop + stripH, y2: stripTop + stripH, stroke: "#666", "stroke-width": 1.2 }));
@@ -1749,21 +1840,24 @@ function bindDragEngine(svg) {
     const sc = Math.min(rect.width / vb[2], rect.height / vb[3]) || 1;
     const ox = (rect.width - vb[2] * sc) / 2, oy = (rect.height - vb[3] * sc) / 2;
     try { svg.setPointerCapture(e.pointerId); } catch (_) {}
-    const st = { type, key: t.dataset.j ?? t.dataset.no ?? t.dataset.i, snap: snapshotState(), moved: false };
+    const st = { type, key: t.dataset.j ?? t.dataset.no ?? t.dataset.i, bk: t.dataset.bk || null, bkI: t.dataset.k != null ? +t.dataset.k : -1, snap: snapshotState(), moved: false };
     const kmAt = ev => { const x = (ev.clientX - rect.left - ox) / sc; return (x - ctx0.left) * ctx0.spanKm / ctx0.axesW - ctx0.ext; };
     const xyAt = ev => ({ x: (ev.clientX - rect.left - ox) / sc, y: (ev.clientY - rect.top - oy) / sc });
     const move = ev => { if (applyDrag(svg, st, kmAt(ev), xyAt(ev))) st.moved = true; };
-    const up = () => {
+    const up = (ev) => {
       svg.removeEventListener("pointermove", move);
       svg.removeEventListener("pointerup", up);
       svg.removeEventListener("pointercancel", up);
       if (svg.__dragCtx) svg.__dragCtx.bubble = null;
       if (!st.moved) {
         const now = Date.now();
-        const isDbl = __lastClick && __lastClick.type === st.type && String(__lastClick.key) === String(st.key) && now - __lastClick.t < 450;
-        __lastClick = { type: st.type, key: st.key, t: now };
-        if (isDbl) { onDragDblClick(svg, st); __lastClick = null; }
+        const isDbl = __lastClick && __lastClick.type === st.type && String(__lastClick.key) === String(st.key)
+          && String(__lastClick.bk || "") === String(st.bk || "") && String(__lastClick.bkI) === String(st.bkI)
+          && now - __lastClick.t < 450;
+        __lastClick = { type: st.type, key: st.key, bk: st.bk, bkI: st.bkI, t: now };
+        if (isDbl) { onDragDblClick(svg, st, ev ? xyAt(ev) : null); __lastClick = null; }
         else if (st.type === "cell") selectCell(+st.key);
+        else if (st.type === "bcell" && st.bk) selectBandCell(st.bk, st.bkI);
         if (svg.__dragCtx) renderFigure(svg.__dragCtx.res);
         return;
       }
@@ -1820,6 +1914,20 @@ function applyDrag(svg, st, km, xy) {
     if (c.pointerPos && Math.abs(c.pointerPos.x - x) < 0.5 && Math.abs(c.pointerPos.y - y) < 0.5) return false;
     c.pointerPos = { x: +x.toFixed(1), y: +y.toFixed(1) };
     ctx.dragHint = { type: "pointer" };
+  } else if (st.type === "bbound") {
+    // 行级分段边界拖拽：钳制在相邻两段之间（不吸附土种格边界，自由不对齐）
+    const segsB = (c.rowBands || {})[st.bk];
+    if (!Array.isArray(segsB)) return false;
+    const i = st.bkI;
+    if (i < 1 || i >= segsB.length) return false;
+    const minW = Math.max(ctx.spanKm * 0.004, 0.02);
+    const lo = segsB[i - 1].a + minW, hi = segsB[i].b - minW;
+    const v = Math.min(Math.max(km, lo), hi);
+    if (Math.abs(v - segsB[i].a) < 1e-6) return false;
+    segsB[i - 1].b = v; segsB[i].a = v;
+    const rowLabel = (c.rows.find(r => r.key === st.bk) || {}).label || st.bk;
+    ctx.dragHint = { type: "bbound", key: st.bk, i };
+    ctx.bubble = { text: `${rowLabel} 边界 ${v.toFixed(2)} km ｜ 左段 ${(v - segsB[i - 1].a).toFixed(2)}km·${((v - segsB[i - 1].a) * ctx.ppk).toFixed(0)}px ｜ 右段 ${(segsB[i].b - v).toFixed(2)}km·${((segsB[i].b - v) * ctx.ppk).toFixed(0)}px` };
   } else return false;
   renderFigure(ctx.res);
   return true;
@@ -1827,7 +1935,7 @@ function applyDrag(svg, st, km, xy) {
 function afterDragEnd(svg, st) {
   if (st.type === "point") computeDebounced();
 }
-function onDragDblClick(svg, st) {
+function onDragDblClick(svg, st, xy) {
   const ctx = svg.__dragCtx;
   if (!ctx) return;
   const c = ctx.c;
@@ -1843,6 +1951,28 @@ function onDragDblClick(svg, st) {
   } else if (st.type === "cell") {
     c.cellSel = null; hideCellBar();
     return;
+  } else if (st.type === "bbound") {
+    // 双击行内分段边界：合并相邻两段（保留左段文字）
+    const segsB = (c.rowBands || {})[st.bk];
+    if (!Array.isArray(segsB) || st.bkI < 1 || st.bkI >= segsB.length) return;
+    const L = segsB[st.bkI - 1], R = segsB[st.bkI];
+    segsB.splice(st.bkI - 1, 2, { a: L.a, b: R.b, text: L.text || R.text || "" });
+    if (c.bandSel && c.bandSel.key === st.bk) c.bandSel = null;
+    hideCellBar();
+    const rowLabel = (c.rows.find(r => r.key === st.bk) || {}).label || st.bk;
+    log(`${rowLabel}行：双击合并分段（现 ${segsB.length} 段）`);
+  } else if (st.type === "bcell" && xy) {
+    // 双击行内分段：在点击处拆分为两段
+    const segsB = (c.rowBands || {})[st.bk];
+    if (!Array.isArray(segsB) || st.bkI < 0 || st.bkI >= segsB.length) return;
+    const sg = segsB[st.bkI];
+    const minW = Math.max(ctx.spanKm * 0.004, 0.02);
+    const km = (xy.x - ctx.left) * ctx.spanKm / ctx.axesW - ctx.ext;
+    const v = Math.min(Math.max(km, sg.a + minW), sg.b - minW);
+    if (v <= sg.a + minW * 0.5 || v >= sg.b - minW * 0.5) { log("该段太窄，无法再拆分"); return; }
+    segsB.splice(st.bkI, 1, { a: sg.a, b: v, text: sg.text || "" }, { a: v, b: sg.b, text: sg.text || "" });
+    const rowLabel = (c.rows.find(r => r.key === st.bk) || {}).label || st.bk;
+    log(`${rowLabel}行：双击拆分分段（现 ${segsB.length} 段）`);
   } else return;
 }
 function selectCell(i) {
@@ -1850,12 +1980,36 @@ function selectCell(i) {
   showCellBar(i);
   if (S.result) renderFigure(S.result);
 }
+function selectBandCell(key, k) {
+  S.cfg.cellSel = null;
+  S.cfg.bandSel = { key, k };
+  const segsB = (S.cfg.rowBands || {})[key];
+  if (!Array.isArray(segsB) || k < 0 || k >= segsB.length) { hideCellBar(); return; }
+  const bar = $("cellBar");
+  if (!bar) return;
+  bar.style.display = "flex";
+  bar.dataset.band = key; bar.dataset.bandK = k;
+  delete bar.dataset.i;
+  const rowLabel = (S.cfg.rows.find(r => r.key === key) || {}).label || key;
+  $("cellBarTitle").textContent = `${rowLabel} · 第 ${k + 1} 段`;
+  const cellG = $("cellBarCell"), bandG = $("cellBarBand");
+  if (cellG) cellG.style.display = "none";
+  if (bandG) bandG.style.display = "inline-flex";
+  const inp = $("bandText");
+  if (inp) { inp.value = segsB[k].text == null ? "" : String(segsB[k].text); }
+  if (S.result) renderFigure(S.result);
+}
 function showCellBar(i) {
   const bar = $("cellBar");
   if (!bar) return;
   bar.style.display = "flex";
-  $("cellBarTitle").textContent = `第 ${i + 1} 格`;
+  S.cfg.bandSel = null;
   bar.dataset.i = i;
+  delete bar.dataset.band; delete bar.dataset.bandK;
+  $("cellBarTitle").textContent = `第 ${i + 1} 格`;
+  const cellG = $("cellBarCell"), bandG = $("cellBarBand");
+  if (cellG) cellG.style.display = "inline-flex";
+  if (bandG) bandG.style.display = "none";
 }
 function hideCellBar() {
   const bar = $("cellBar");
@@ -2717,7 +2871,50 @@ document.querySelectorAll("#cellBar button[data-mb]").forEach(b => b.onclick = (
   const d = +b.dataset.mb * step;
   moveBound(b.dataset.side === "L" ? i : i + 1, d);
 });
-$("cellBarClose").onclick = () => { S.cfg.cellSel = null; hideCellBar(); if (S.result) renderFigure(S.result); };
+$("cellBarClose").onclick = () => { S.cfg.cellSel = null; S.cfg.bandSel = null; hideCellBar(); if (S.result) renderFigure(S.result); };
+/* 行分段编辑条：文字 / 中点拆分 / 合并右段 */
+const __bt = $("bandText");
+if (__bt) {
+  let __btT = null;
+  __bt.oninput = () => {
+    const bar = $("cellBar");
+    const segsB = (S.cfg.rowBands || {})[bar.dataset.band];
+    const k = +bar.dataset.bandK;
+    if (!Array.isArray(segsB) || !(k >= 0) || k >= segsB.length) return;
+    segsB[k].text = __bt.value;
+    clearTimeout(__btT);
+    __btT = setTimeout(() => renderFigure(S.result), 180);   // 去抖即时渲染，输入跟手
+  };
+}
+const __bs = $("bandSplit");
+if (__bs) __bs.onclick = () => {
+  const bar = $("cellBar");
+  const segsB = (S.cfg.rowBands || {})[bar.dataset.band];
+  const k = +bar.dataset.bandK;
+  const svg = $("figure"), ctx = svg.__dragCtx;
+  if (!Array.isArray(segsB) || !(k >= 0) || k >= segsB.length || !ctx) return;
+  const sg = segsB[k];
+  const minW = Math.max(ctx.spanKm * 0.004, 0.02);
+  if (sg.b - sg.a < minW * 2) { log("该段太窄，无法再拆分"); return; }
+  const snap = snapshotState();
+  const v = (sg.a + sg.b) / 2;
+  segsB.splice(k, 1, { a: sg.a, b: v, text: sg.text || "" }, { a: v, b: sg.b, text: sg.text || "" });
+  renderFigure(S.result);
+  pushUndo(snap);
+};
+const __bm = $("bandMerge");
+if (__bm) __bm.onclick = () => {
+  const bar = $("cellBar");
+  const segsB = (S.cfg.rowBands || {})[bar.dataset.band];
+  const k = +bar.dataset.bandK;
+  if (!Array.isArray(segsB) || !(k >= 0) || k >= segsB.length - 1) { log("已是最后一段，无右段可合并"); return; }
+  const snap = snapshotState();
+  const L = segsB[k], R = segsB[k + 1];
+  segsB.splice(k, 2, { a: L.a, b: R.b, text: L.text || R.text || "" });
+  renderFigure(S.result);
+  selectBandCell(bar.dataset.band, k);
+  pushUndo(snap);
+};
 const cs2 = $("codeSearch");
 if (cs2) cs2.oninput = renderCodesTable;
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {

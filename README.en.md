@@ -12,7 +12,7 @@ Tech stack: Rust · Tauri 2 · MapLibre GL · GDAL 3.10 (dynamically loaded via 
 
 ![Map workbench](screenshots/main-view.png)
 
-**Soil type section figure** — terrain profile, soil species color band, soil code / soil species table, zonal boundary lines, and direction pointer:
+**Soil type section figure** — terrain profile, soil species color band, and a table of soil code / soil species / parent material / landform type (3 landform bands spanning multiple soil cells, boundaries not aligned):
 
 ![Soil type section figure](screenshots/section-figure.png)
 
@@ -29,6 +29,7 @@ Tech stack: Rust · Tauri 2 · MapLibre GL · GDAL 3.10 (dynamically loaded via 
 - Section computation: sampling interval, end extension, smoothing, orientation (high-to-low / reversed / along the line), vertical exaggeration (auto or manual)
 - Maximin cell-width algorithm: midpoint segmentation between adjacent points + bisection for minimum cell width, keeping labels readable in narrow cells
 - Table rows: toggle, drag to reorder, per-row height; global font scale applied to all text; figure width 0–6000 px; slider and numeric input for every parameter
+- Cross-cell band rows: rows such as landform type or parent material can be switched to "band" mode — adjacent equal cells merge into one band (e.g. 16 soil species cells collapse into 3 landform segments); band boundaries are independent of soil cell boundaries, draggable, double-click to merge/split, click a band to edit its text
 - Zonal boundary lines automatically take the soil order color when the name contains one
 - Section point table: all fields editable, soil species and elevation extracted along the line by distance, drag to reorder, add/delete rows synced across table, figure, and map
 
