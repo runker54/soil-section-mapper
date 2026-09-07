@@ -103,7 +103,7 @@ const S = {
     cellSel: null,          // 当前选中格子
     rowBands: null,         // 行级独立分段 { [rowKey]: [{a,b,text},...] }（与土种格不对齐；相邻同值合并初始化）
     bandSel: null,          // 当前选中的行分段 { key, k }
-    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
+    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, terrStyle: "soil", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
   },
   table: [],
   result: null,
@@ -870,6 +870,11 @@ function buildSidebar() {
         rng("layFont", "整体字号", 0.5, 2.5, 0.05, L.fontScale || 1, "×") +
         `<div class="row"><label>图幅宽 px</label><input type="number" class="lay-num" id="layFigWN" min="0" max="6000" step="50" value="${L.figW || 0}"/><span class="mini lay-unit">0=自动</span></div>
         <div class="row"><label>地形配色</label>
+          <label class="mini"><input type="radio" name="terrStyle" value="soil" ${L.terrStyle !== "classic" ? "checked" : ""}/>土种色</label>
+          <label class="mini"><input type="radio" name="terrStyle" value="classic" ${L.terrStyle === "classic" ? "checked" : ""}/>经典灰</label>
+        </div>
+        <div class="row" title="土种色模式顶部自动取土种颜色，仅下两级可调；经典灰模式三级均可调">
+          <label>渐变色阶</label>
           <input type="color" id="layT1" value="${L.terr1 || "#b0a99f"}" style="width:30px;padding:0"/>
           <input type="color" id="layT2" value="${L.terr2 || "#ccc7be"}" style="width:30px;padding:0"/>
           <input type="color" id="layT3" value="${L.terr3 || "#e5e2db"}" style="width:30px;padding:0"/>
@@ -1209,6 +1214,11 @@ function wireSidebar() {
   bindLay("layTerrainH", "terrainH"); bindLay("layTopPad", "topPad");
   bindLay("layStripH", "stripH"); bindLay("layRowH", "rowH"); bindLay("layFont", "fontScale");
   bindLay("layT1", "terr1", false); bindLay("layT2", "terr2", false); bindLay("layT3", "terr3", false);
+  document.querySelectorAll('input[name="terrStyle"]').forEach(r => r.onchange = e => {
+    if (!e.target.checked) return;
+    c.layout.terrStyle = e.target.value;
+    if (S.result) renderFigure(S.result);
+  });
   document.querySelectorAll(".ghead").forEach(h => h.onclick = () => {
     const sec = h.parentElement;
     sec.classList.toggle("closed");
@@ -1504,7 +1514,7 @@ function renderFigure(res) {
     return base;
   };
   const tableH = stripH + rowsOn.reduce((a, r) => a + rowHOf(r), 0) + 8;   // 行区紧贴色带，底线紧贴末行（btmY=行区底）
-  const figH = topY + terrainH + axisGap + tableH + 26;
+  const figH = Math.round(topY + terrainH + axisGap + tableH + 26);   // 取整：导出画布与分辨率提示为整数
 
   svg.setAttribute("viewBox", `0 0 ${figW} ${figH}`);
   svg.setAttribute("width", figW); svg.setAttribute("height", figH);
@@ -1519,18 +1529,90 @@ function renderFigure(res) {
   { let acc = tableTop + stripH; rowsOn.forEach(r => { rowYs.set(r.key, { y: acc, h: rowHOf(r) }); acc += rowHOf(r); }); }
   const bandSpans = rowsOn.map(r => ({ row: r, yv: rowYs.get(r.key) })).filter(x => bandOf(x.row));
 
-  /* --- 地形剖面（渐变） --- */
+  /* --- 地形剖面（两种配色：土种色分段渐变（默认）/ 经典灰渐变） --- */
+  const terrStyle = LAY.terrStyle === "classic" ? "classic" : "soil";
+  // 地形着色段：与色带行一致（土种编号跨格合并时按合并段，否则逐格）
+  const terrSegs = (() => {
+    const cb = bandOf(c.rows.find(r => r.key === "code") || {});
+    if (cb) return cb.map(sg => ({ a: Math.max(0, sg.a ?? 0), b: Math.min(totalKm, sg.b ?? totalKm), color: sg.color }));
+    return segs.map((s, i) => ({ a: B[i], b: B[i + 1], color: s.color }));
+  })();
   const defs = el("defs", {});
-  const grad = el("linearGradient", { id: "terrGrad", x1: 0, y1: 0, x2: 0, y2: 1 });
-  grad.appendChild(el("stop", { offset: "0%", "stop-color": LAY.terr1 || "#b0a99f" }));
-  grad.appendChild(el("stop", { offset: "55%", "stop-color": LAY.terr2 || "#ccc7be" }));
-  grad.appendChild(el("stop", { offset: "100%", "stop-color": LAY.terr3 || "#e5e2db" }));
-  defs.appendChild(grad);
+  if (terrStyle === "classic") {
+    const grad = el("linearGradient", { id: "terrGrad", x1: 0, y1: 0, x2: 0, y2: 1 });
+    grad.appendChild(el("stop", { offset: "0%", "stop-color": LAY.terr1 || "#b0a99f" }));
+    grad.appendChild(el("stop", { offset: "55%", "stop-color": LAY.terr2 || "#ccc7be" }));
+    grad.appendChild(el("stop", { offset: "100%", "stop-color": LAY.terr3 || "#e5e2db" }));
+    defs.appendChild(grad);
+  } else {
+    // 全局灰底渐变（userSpaceOnUse：全图灰度一致，不随段内高差变化）
+    const gBase = el("linearGradient", { id: "terrBase", gradientUnits: "userSpaceOnUse", x1: 0, y1: topY, x2: 0, y2: ypx(dispBase) });
+    gBase.appendChild(el("stop", { offset: "0%", "stop-color": LAY.terr2 || "#ccc7be" }));
+    gBase.appendChild(el("stop", { offset: "100%", "stop-color": LAY.terr3 || "#e5e2db" }));
+    defs.appendChild(gBase);
+    // 表层色带渐变（每段：土种色 → 半透明，厚度内垂直衰减）
+    terrSegs.forEach((sg, i) => {
+      const g = el("linearGradient", { id: "terrG" + i, x1: 0, y1: 0, x2: 0, y2: 1 });
+      g.appendChild(el("stop", { offset: "0%", "stop-color": sg.color || "#b0a99f" }));
+      g.appendChild(el("stop", { offset: "100%", "stop-color": sg.color || "#b0a99f", "stop-opacity": "0.45" }));
+      defs.appendChild(g);
+    });
+  }
   svg.appendChild(defs);
-  let dPath = `M ${xpx(stations[0][0])} ${ypx(dispBase)}`;
-  stations.forEach((s, i) => dPath += ` L ${xpx(s[0])} ${ypx(disp[i])}`);
-  dPath += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
-  svg.appendChild(el("path", { d: dPath, fill: "url(#terrGrad)", stroke: "#3f3a36", "stroke-width": 1.5 }));
+  if (terrStyle === "classic") {
+    let dPath = `M ${xpx(stations[0][0])} ${ypx(dispBase)}`;
+    stations.forEach((s, i) => dPath += ` L ${xpx(s[0])} ${ypx(disp[i])}`);
+    dPath += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
+    svg.appendChild(el("path", { d: dPath, fill: "url(#terrGrad)", stroke: "#3f3a36", "stroke-width": 1.5 }));
+  } else {
+    // 表层着色：色带贴地形表面垂直向下 D 像素（同一土种无论高低位置都有颜色），带下接灰底渐变
+    const kmLo = stations[0][0], kmHi = stations[stations.length - 1][0];
+    const dispAt = (km) => {
+      const kk = Math.min(Math.max(km, kmLo), kmHi);
+      let i = 0;
+      while (i < stations.length - 2 && stations[i + 1][0] < kk) i++;
+      const t = (kk - stations[i][0]) / Math.max(stations[i + 1][0] - stations[i][0], 1e-9);
+      return disp[i] + t * (disp[i + 1] - disp[i]);
+    };
+    const D = Math.max(46, Math.round(terrainH * 0.16));   // 表层色带厚度
+    // 段范围：首末段扩展覆盖两端外延区；左右各重叠 0.7px 消除相邻段抗锯齿白缝
+    const segRange = terrSegs.map((sg, i) => ({
+      a: i === 0 ? Math.min(sg.a, kmLo) : sg.a,
+      b: i === terrSegs.length - 1 ? Math.max(sg.b, kmHi) : sg.b,
+      color: sg.color,
+    }));
+    const segPts = (a, b) => {
+      const ka = Math.min(Math.max(a, kmLo), kmHi), kb = Math.min(Math.max(b, kmLo), kmHi);
+      const pts = [[ka, dispAt(ka)]];
+      stations.forEach((s, j) => { if (s[0] > ka && s[0] < kb) pts.push([s[0], disp[j]]); });
+      pts.push([kb, dispAt(kb)]);
+      return pts;
+    };
+    // ① 各段灰底：上边界 = 地形线下移 D（表层带下至基线）
+    segRange.forEach(sg => {
+      const pts = segPts(sg.a, sg.b);
+      if (pts[pts.length - 1][0] - pts[0][0] < 0.3) return;
+      let d = `M ${xpx(pts[0][0]) - 0.7} ${ypx(dispBase)}`;
+      pts.forEach(p => d += ` L ${xpx(p[0])} ${ypx(p[1]) + D}`);
+      d += ` L ${xpx(pts[pts.length - 1][0]) + 0.7} ${ypx(dispBase)} Z`;
+      svg.appendChild(el("path", { d, fill: "url(#terrBase)", stroke: "none" }));
+    });
+    // ② 各段表层色带：地形线与其平行下移线围成的表层条带
+    segRange.forEach((sg, i) => {
+      const pts = segPts(sg.a, sg.b);
+      if (pts[pts.length - 1][0] - pts[0][0] < 0.3) return;
+      let d = `M ${xpx(pts[0][0]) - 0.7} ${ypx(pts[0][1]) + D}`;
+      pts.forEach(p => d += ` L ${xpx(p[0])} ${ypx(p[1]) + D}`);
+      for (let k = pts.length - 1; k >= 0; k--) d += ` L ${xpx(pts[k][0])} ${ypx(pts[k][1])}`;
+      d += " Z";
+      svg.appendChild(el("path", { d, fill: `url(#terrG${i})`, stroke: "none" }));
+    });
+    // ③ 整体轮廓（表面折线 + 两端竖线 + 基线），与经典模式描边一致
+    let dPath2 = `M ${xpx(stations[0][0])} ${ypx(dispBase)}`;
+    stations.forEach((s, i) => dPath2 += ` L ${xpx(s[0])} ${ypx(disp[i])}`);
+    dPath2 += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
+    svg.appendChild(el("path", { d: dPath2, fill: "none", stroke: "#3f3a36", "stroke-width": 1.5 }));
+  }
 
   /* --- 高程刻度与网格（可在制图要素中开关） --- */
   if (c.show.elevAxis) {

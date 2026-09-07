@@ -32,6 +32,7 @@ Tech stack: Rust · Tauri 2 · MapLibre GL · GDAL 3.10 (dynamically loaded via 
 - Cross-cell band rows (on by default): adjacent equal cells in any table row merge into one wide band (soil codes and profile sequences merge when equal; landform bands span soil cells); band boundaries are independent of soil cell boundaries, draggable, double-click to merge/split, click a band to edit its text; landform/parent-material rows prefer values from the section-point table (falling back to elevation/soil-order inference); click empty canvas to deselect
 - Elevation axis and distance axis can be toggled independently
 - Zonal boundary lines automatically take the soil order color when the name contains one
+- Terrain coloring (soil-color default): a surface blanket follows the terrain — each soil segment's color fills a fixed depth below the surface (valleys included), fading into a globally consistent gray gradient; classic gray gradient available as an alternative with adjustable lower stops
 - Section point table: all fields editable, soil species and elevation extracted along the line by distance, drag to reorder, add/delete rows synced across table, figure, and map
 
 ### Data and Export
