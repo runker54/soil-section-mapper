@@ -878,13 +878,12 @@ function zoneRowHtml(z, i) {
   </div><datalist id="tlNames">${(S.builtin.tlNames || []).map(t => `<option value="${esc(t)}"/>`).join("")}</datalist>`;
 }
 function rowItemHtml(r, i) {
-  const bandable = r.key !== "code" && r.key !== "profile";
   return `<div class="rrow" data-i="${i}">
     <span class="gripd" title="拖动调整顺序">⠿</span>
     <input type="checkbox" class="r-on" ${r.on ? "checked" : ""}/>
     <span class="lbl">${r.label}</span>
     <input type="number" class="r-rh" min="20" max="200" step="2" value="${r.rh || ""}" placeholder="高" title="本行行高 px（留空用默认）"/>
-    ${bandable ? `<input type="checkbox" class="r-band" ${r.band ? "checked" : ""} title="跨土种分段：相邻同值自动合并为一条（如地貌类型往往跨多个土种），边界可拖动、双击合并/拆分，与土种格不对齐"/>` : ""}
+    <input type="checkbox" class="r-band" ${r.band ? "checked" : ""} title="跨格合并：相邻同值自动合并为一条宽格（土种编号/剖面构型相邻相同合并，地貌类型等跨土种分段），边界可拖动、双击合并/拆分"/>
   </div>`;
 }
 
@@ -909,6 +908,7 @@ function toggleBand(row, on) {
   const B = ctx.B;
   const valOf = (s) => {
     if (row.key === "lith") return s.lith || parentOf(s.tz, s.tl) || "—";
+    if (row.key === "profile") return `${s.tl || ""}|${s.yl || ""}|${s.tz || ""}`;   // 构型序列指纹（同序列合并）
     const v = s[row.key];
     return v == null || v === "" ? "—" : String(v);
   };
@@ -917,7 +917,7 @@ function toggleBand(row, on) {
     const v = valOf(s);
     const last = segs[segs.length - 1];
     if (last && last.text === v) last.b = B[i + 1];   // 相邻同值合并（跨土种）
-    else segs.push({ a: B[i], b: B[i + 1], text: v });
+    else segs.push({ a: B[i], b: B[i + 1], text: v, color: s.color, tl: s.tl, yl: s.yl, tz: s.tz });
   });
   if (!c.rowBands) c.rowBands = {};
   c.rowBands[row.key] = segs;
@@ -1681,18 +1681,21 @@ function renderFigure(res) {
     const dispB = B;
     const stripTop = tableTop;
     const showCode = c.rows.find(r => r.key === "code")?.on;
+    const codeBand = bandOf(c.rows.find(r => r.key === "code") || {});
     const fitFontCode = (text, cellPx) => Math.max(6, Math.min(15.3, (cellPx - 6) / (text.length * 0.62)));
     segs.forEach((s, i) => {
       let x0 = xpx0(dispB[i]), x1 = xpx0(dispB[i + 1]);
       if (i === 0) x0 = left;
       if (i === segs.length - 1) x1 = right;
       if (x1 <= x0 + 0.5) return;
-      const sel = c.cellSel === i;
-      svg.appendChild(el("rect", { x: x0, y: stripTop, width: x1 - x0, height: stripH, fill: s.color, stroke: sel ? "#c0392b" : "#fff", "stroke-width": sel ? 2.6 : 1.4, "data-drag": "cell", "data-i": i, "pointer-events": "all", style: "cursor:pointer" }));
-      if (showCode && s.code) {
-        svg.appendChild(el("text", { x: (x0 + x1) / 2, y: stripTop + stripH / 2 + 5.5,
-          "font-size": fitFontCode(String(s.code), x1 - x0).toFixed(1), "font-weight": "bold",
-          fill: contrast(s.color), "text-anchor": "middle", "pointer-events": "none" }, String(s.code)));
+      if (!codeBand) {   // 色带行 band 模式：相邻同编号合并，在格循环后按段绘制
+        const sel = c.cellSel === i;
+        svg.appendChild(el("rect", { x: x0, y: stripTop, width: x1 - x0, height: stripH, fill: s.color, stroke: sel ? "#c0392b" : "#fff", "stroke-width": sel ? 2.6 : 1.4, "data-drag": "cell", "data-i": i, "pointer-events": "all", style: "cursor:pointer" }));
+        if (showCode && s.code) {
+          svg.appendChild(el("text", { x: (x0 + x1) / 2, y: stripTop + stripH / 2 + 5.5,
+            "font-size": fitFontCode(String(s.code), x1 - x0).toFixed(1), "font-weight": "bold",
+            fill: contrast(s.color), "text-anchor": "middle", "pointer-events": "none" }, String(s.code)));
+        }
       }
       const v = s.tz || "—";
       let ryAcc = stripTop + stripH + 8;
@@ -1742,12 +1745,35 @@ function renderFigure(res) {
         }
       });
     });
+    /* --- 色带行 band 模式：相邻同编号合并为宽色带段 --- */
+    if (codeBand) {
+      codeBand.forEach((sg, k) => {
+        let x0 = xpx(Math.max(0, Math.min(sg.a ?? 0, totalKm)));
+        let x1 = xpx(Math.max(0, Math.min(sg.b ?? totalKm, totalKm)));
+        if (k === 0) x0 = left;
+        if (k === codeBand.length - 1) x1 = right;
+        if (x1 <= x0 + 0.5) return;
+        const selB = c.bandSel && c.bandSel.key === "code" && c.bandSel.k === k;
+        svg.appendChild(el("rect", { x: x0, y: stripTop, width: x1 - x0, height: stripH, fill: sg.color || "#ccc", stroke: selB ? "#c0392b" : "#fff", "stroke-width": selB ? 2.6 : 1.4, "data-drag": "bcell", "data-bk": "code", "data-k": k, "pointer-events": "all", style: "cursor:pointer" }));
+        if (showCode && sg.text && sg.text !== "—") {
+          svg.appendChild(el("text", { x: (x0 + x1) / 2, y: stripTop + stripH / 2 + 5.5,
+            "font-size": fitFontCode(String(sg.text), x1 - x0).toFixed(1), "font-weight": "bold",
+            fill: contrast(sg.color || "#ccc"), "text-anchor": "middle", "pointer-events": "none" }, String(sg.text)));
+        }
+        if (k >= 1) {
+          const hintBB = svg.__dragCtx && svg.__dragCtx.dragHint && svg.__dragCtx.dragHint.type === "bbound" && svg.__dragCtx.dragHint.key === "code" && svg.__dragCtx.dragHint.i === k;
+          svg.appendChild(el("line", { x1: x0, x2: x0, y1: stripTop, y2: stripTop + stripH, stroke: hintBB ? "#c0392b" : "#5a4632", "stroke-width": hintBB ? 2.6 : 1.3, "pointer-events": "none" }));
+          svg.appendChild(el("line", { x1: x0, x2: x0, y1: stripTop, y2: stripTop + stripH, stroke: "rgba(192,57,43,0)", "stroke-width": 16, "pointer-events": "all", "data-drag": "bbound", "data-bk": "code", "data-k": k, style: "cursor:ew-resize" }));
+        }
+      });
+    }
     const btmY = tableTop + tableH - 8;
-    // 共享边界可见线在 band 行区间内断开（行内分段线独立表达，避免两套竖线交叉）
+    // 共享边界可见线：不穿色带行（色带格以白描边自分隔），band 行区间内断开（行内分段线独立表达）
     const solidSpans = (() => {
-      if (!bandSpans.length) return [[stripTop, btmY]];
+      const yStart = stripTop + stripH;
+      if (!bandSpans.length) return [[yStart, btmY]];
       const cuts = bandSpans.map(bs => [bs.yv.y, bs.yv.y + bs.yv.h]).sort((p, q) => p[0] - q[0]);
-      const spans = []; let cur = stripTop;
+      const spans = []; let cur = yStart;
       for (const [y0, y1] of cuts) { if (y0 > cur + 0.5) spans.push([cur, y0]); cur = Math.max(cur, y1); }
       if (btmY > cur + 0.5) spans.push([cur, btmY]);
       return spans;
@@ -1758,11 +1784,10 @@ function renderFigure(res) {
       solidSpans.forEach(([y0, y1]) => svg.appendChild(el("line", { x1: x, x2: x, y1: y0, y2: y1, stroke: hintB ? "#c0392b" : "#888", "stroke-width": hintB ? 2.4 : 1, "pointer-events": "none" })));
       svg.appendChild(el("line", { x1: x, x2: x, y1: stripTop, y2: btmY, stroke: "rgba(192,57,43,0)", "stroke-width": 16, "class": "bound-hit", "pointer-events": "all", "data-drag": "bound", "data-j": j, style: "cursor:ew-resize" }));
     });
-    /* --- band 行绘制：跨土种条带（底色 + 段 + 文字 + 行内边界线） --- */
+    /* --- band 行绘制：跨土种条带（不透明段块填满 + 段文字/构型柱 + 行内边界线） --- */
     bandSpans.forEach(({ row, yv }) => {
       const segsB = bandOf(row);
       const rh = yv.h, ry = yv.y;
-      svg.appendChild(el("rect", { x: left, y: ry, width: right - left, height: rh, fill: "rgba(140,100,60,0.06)", "pointer-events": "none" }));
       segsB.forEach((sg, k) => {
         let x0 = xpx(Math.max(0, Math.min(sg.a ?? 0, totalKm)));
         let x1 = xpx(Math.max(0, Math.min(sg.b ?? totalKm, totalKm)));
@@ -1770,16 +1795,41 @@ function renderFigure(res) {
         if (k === segsB.length - 1) x1 = right;
         if (x1 <= x0 + 0.5) return;
         const selB = c.bandSel && c.bandSel.key === row.key && c.bandSel.k === k;
-        if (selB) svg.appendChild(el("rect", { x: x0 + 1.5, y: ry + 1.5, width: x1 - x0 - 3, height: rh - 3, fill: "none", stroke: "#c0392b", "stroke-width": 2.2, "pointer-events": "none" }));
+        if (row.key === "profile") {
+          // 构型柱按段绘制（相邻同序列合并为宽柱）
+          const seq = profileSequence(sg.tl, sg.yl, sg.tz);
+          if (seq && x1 > x0 + 1) {
+            const colW = Math.max(9, Math.min(x1 - x0 - 8, 44));
+            const colX = (x0 + x1) / 2 - colW / 2;
+            const colH = rh - 14;
+            let yy = ry + 7;
+            const topY2 = yy;
+            seq.forEach(([ln, lc, lw2]) => {
+              const hh = lw2 * colH;
+              svg.appendChild(el("rect", { x: colX, y: yy, width: colW, height: hh, fill: lc, stroke: "#fff", "stroke-width": 0.7 }));
+              if (hh > 11 && colW >= 18) {
+                svg.appendChild(el("text", { x: colX + colW / 2, y: yy + hh / 2 + 3.6, "font-size": 8.5,
+                  fill: contrast(lc), "text-anchor": "middle", "font-weight": "bold", "pointer-events": "none" }, ln));
+              }
+              yy += hh;
+            });
+            svg.appendChild(el("line", { x1: colX - 3, x2: colX + colW + 3, y1: topY2, y2: topY2, stroke: "#3f3a36", "stroke-width": 1.6, "pointer-events": "none" }));
+          }
+          if (selB) svg.appendChild(el("rect", { x: x0 + 1.5, y: ry + 1.5, width: x1 - x0 - 3, height: rh - 3, fill: "none", stroke: "#c0392b", "stroke-width": 2.2, "pointer-events": "none" }));
+        } else {
+          // 段块交替不透明底色：填满行区，遮蔽底稿残线
+          svg.appendChild(el("rect", { x: x0, y: ry, width: x1 - x0, height: rh, fill: k % 2 ? "#efe6d8" : "#f8f3ea", "pointer-events": "none" }));
+          if (selB) svg.appendChild(el("rect", { x: x0 + 1.5, y: ry + 1.5, width: x1 - x0 - 3, height: rh - 3, fill: "none", stroke: "#c0392b", "stroke-width": 2.2, "pointer-events": "none" }));
+          const v = sg.text == null || sg.text === "" ? "—" : String(sg.text);
+          const fit = tzFit(v, x1 - x0);
+          const fs2 = Math.min(fit.fs, 15.3);
+          const lh2 = fs2 * 1.18;
+          const yFirst = ry + rh / 2 - (fit.lines.length - 1) * lh2 / 2 + fs2 * 0.36;
+          const e = el("text", { x: (x0 + x1) / 2, y: yFirst, "font-size": fs2.toFixed(1), fill: "#111", "text-anchor": "middle", "pointer-events": "none" });
+          fit.lines.forEach((line, li2) => e.appendChild(el("tspan", { x: (x0 + x1) / 2, dy: li2 === 0 ? 0 : lh2 }, line)));
+          svg.appendChild(e);
+        }
         svg.appendChild(el("rect", { x: x0, y: ry, width: x1 - x0, height: rh, fill: "transparent", "data-drag": "bcell", "data-bk": row.key, "data-k": k, "pointer-events": "all", style: "cursor:pointer" }));
-        const v = sg.text == null || sg.text === "" ? "—" : String(sg.text);
-        const fit = tzFit(v, x1 - x0);
-        const fs2 = Math.min(fit.fs, 15.3);
-        const lh2 = fs2 * 1.18;
-        const yFirst = ry + rh / 2 - (fit.lines.length - 1) * lh2 / 2 + fs2 * 0.36;
-        const e = el("text", { x: (x0 + x1) / 2, y: yFirst, "font-size": fs2.toFixed(1), fill: "#111", "text-anchor": "middle", "pointer-events": "none" });
-        fit.lines.forEach((line, li2) => e.appendChild(el("tspan", { x: (x0 + x1) / 2, dy: li2 === 0 ? 0 : lh2 }, line)));
-        svg.appendChild(e);
         if (k >= 1) {
           const hintBB = svg.__dragCtx && svg.__dragCtx.dragHint && svg.__dragCtx.dragHint.type === "bbound" && svg.__dragCtx.dragHint.key === row.key && svg.__dragCtx.dragHint.i === k;
           svg.appendChild(el("line", { x1: x0, x2: x0, y1: ry, y2: ry + rh, stroke: hintBB ? "#c0392b" : "#8a5a2a", "stroke-width": hintBB ? 2.6 : 1.3, "pointer-events": "none" }));
@@ -1836,7 +1886,15 @@ function bindDragEngine(svg) {
   svg.__dragEngine = true;
   svg.addEventListener("pointerdown", e => {
     const t = e.target.closest("[data-drag]");
-    if (!t) return;
+    if (!t) {   // 点击图面空白：清除格子/段选中态与编辑条（点击外部取消，Excel 惯例）
+      if (e.button !== 0) return;
+      if (S.cfg.cellSel != null || S.cfg.bandSel) {
+        S.cfg.cellSel = null; S.cfg.bandSel = null;
+        hideCellBar();
+        if (S.result && document.getElementById("figModal").classList.contains("open")) renderFigure(S.result);
+      }
+      return;
+    }
     if (e.button !== 0) return;
     e.preventDefault();
     const type = t.dataset.drag;
@@ -1855,7 +1913,7 @@ function bindDragEngine(svg) {
       svg.removeEventListener("pointermove", move);
       svg.removeEventListener("pointerup", up);
       svg.removeEventListener("pointercancel", up);
-      if (svg.__dragCtx) svg.__dragCtx.bubble = null;
+      if (svg.__dragCtx) { svg.__dragCtx.bubble = null; }
       if (!st.moved) {
         const now = Date.now();
         const isDbl = __lastClick && __lastClick.type === st.type && String(__lastClick.key) === String(st.key)
@@ -1870,6 +1928,7 @@ function bindDragEngine(svg) {
       }
       afterDragEnd(svg, st);
       pushUndo(st.snap);
+      if (svg.__dragCtx) svg.__dragCtx.dragHint = null;   // 拖动结束清高亮，避免红线残留
       renderFigure(svg.__dragCtx.res);
     };
     svg.addEventListener("pointermove", move);
