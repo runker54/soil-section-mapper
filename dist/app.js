@@ -30,6 +30,13 @@ const SOIL_PARENT = {
   "黄壤": "砂页岩风化物", "红壤": "砂页岩/第四纪红土", "黄棕壤": "砂页岩残坡积物",
   "潮土": "河流冲积物", "水稻土": "冲积/坡积物", "泥炭土": "湖沼沉积物",
 };
+/** 母岩母质：土种名中的显式母质词优先（灰泥质/灰泥田 → 石灰岩/白云岩；泥质 → 泥岩/页岩），否则按土类映射 */
+function parentOf(tz, tl) {
+  const n = String(tz || "");
+  if (/灰泥质|灰泥田/.test(n)) return "石灰岩/白云岩风化物";
+  if (/泥质/.test(n)) return "泥岩/页岩风化物";
+  return SOIL_PARENT[tl] || "";
+}
 /** 由土种名解析剖面层厚调制（薄/中/厚腐 × 薄/中/厚层） */
 function profileSequence(tl, yl, tz) {
   let seq = SOIL_PROFILES[tl];
@@ -901,7 +908,7 @@ function toggleBand(row, on) {
   }
   const B = ctx.B;
   const valOf = (s) => {
-    if (row.key === "lith") return s.lith || SOIL_PARENT[s.tl] || "—";
+    if (row.key === "lith") return s.lith || parentOf(s.tz, s.tl) || "—";
     const v = s[row.key];
     return v == null || v === "" ? "—" : String(v);
   };
@@ -1719,7 +1726,7 @@ function renderFigure(res) {
             ({ lines, fs: fs2 } = tzFit(v, x1 - x0));
           } else {
             let txt;
-            if (row.key === "lith") txt = s.lith || SOIL_PARENT[s.tl] || "—";
+            if (row.key === "lith") txt = s.lith || parentOf(s.tz, s.tl) || "—";
             else txt = s[row.key] || "—";
             fs2 = Math.max(6, Math.min(row.key === "lith" ? 13.5 : 15.3, (x1 - x0 - 8) / String(txt).length));
             lines = [String(txt)];
