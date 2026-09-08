@@ -140,11 +140,11 @@
                       <button class="btn small" id="btnCodesTpl" title="导出当前全部表为 JSON 模板（可修改后导入）">⇪ 模板</button>
                       <button class="btn small" id="btnCodesReset" title="恢复内置编码/色带表">↺ 内置</button>
                     </div>
-                    <div class="pane-toolbar" title="区县方案：按当前土壤图实际出现的土种重新编号（保持全省分类排序顺序），同土类内面积大→淡色、面积小→浓色突出（依据颜色推荐表与土壤色标表的配色标准）">
+                    <div class="pane-toolbar" title="区县重编：按当前土壤图实际出现的土种重新编号（保持全省分类排序），同土类内面积大→淡、面积小→浓">
                       <span class="hint">编码方案</span>
                       <label class="mini"><input type="radio" name="codeScheme" value="province" checked/>全省统一</label>
-                      <label class="mini"><input type="radio" name="codeScheme" value="county"/>区县重编（按当前土壤图面积）</label>
-                      <span id="schemeInfo" class="hint"></span>
+                      <label class="mini"><input type="radio" name="codeScheme" value="county"/>区县重编</label>
+                      <button class="btn small" id="btnCodesExport" title="导出当前编码方案表为 CSV（Excel 可直接打开）">⇩ 导出编码表</button>
                     </div>
                     <div class="tablewrap"><table id="codesTable"></table></div>
                   </div>

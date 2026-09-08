@@ -103,7 +103,7 @@ const S = {
     cellSel: null,          // 当前选中格子
     rowBands: null,         // 行级独立分段 { [rowKey]: [{a,b,text},...] }（与土种格不对齐；相邻同值合并初始化）
     bandSel: null,          // 当前选中的行分段 { key, k }
-    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, terrStyle: "soil", terrBandH: 0, terrLine: "black", fontFamily: "", fontScope: "all", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
+    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, fontScaleScope: "all", terrStyle: "soil", terrBandH: 0, terrLine: "black", fontFamily: "", fontScope: "all", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
   },
   table: [],
   result: null,
@@ -870,6 +870,13 @@ function buildSidebar() {
         rng("layStripH", "色带高度", 24, 100, 2, L.stripH || 46, "px") +
         rng("layRowH", "默认行高", 34, 160, 2, L.rowH || 58, "px") +
         rng("layFont", "整体字号", 0.5, 2.5, 0.05, L.fontScale || 1, "×") +
+        `<div class="row" title="字号应用范围：全部文字，或仅表格/图面标注/轴刻度某一部位（与字体范围相互独立）">
+          <label>字号范围</label>
+          <select id="layFSScope" class="lay-num" style="flex:1">
+            ${[["all", "全部"], ["tbl", "仅表格"], ["lab", "仅图面标注"], ["axis", "仅轴刻度"]]
+              .map(([v, n]) => `<option value="${v}" ${(L.fontScaleScope || "all") === v ? "selected" : ""}>${n}</option>`).join("")}
+          </select>
+        </div>` +
         rng("layBandH", "表层色带厚", 0, 220, 4, L.terrBandH || 0, "px") +
         `<div class="row"><label>剖面线</label>
           <label class="mini"><input type="radio" name="terrLine" value="black" ${L.terrLine !== "soil" ? "checked" : ""}/>黑色</label>
@@ -1243,9 +1250,10 @@ function wireSidebar() {
     c.layout.terrLine = e.target.value;
     if (S.result) renderFigure(S.result);
   });
-  const ffSel = $("layFontFam"), fsSel = $("layFontScope");
+  const ffSel = $("layFontFam"), fsSel = $("layFontScope"), fssSel = $("layFSScope");
   if (ffSel) ffSel.onchange = () => { c.layout.fontFamily = ffSel.value; if (S.result) renderFigure(S.result); };
   if (fsSel) fsSel.onchange = () => { c.layout.fontScope = fsSel.value; if (S.result) renderFigure(S.result); };
+  if (fssSel) fssSel.onchange = () => { c.layout.fontScaleScope = fssSel.value; if (S.result) renderFigure(S.result); };
   document.querySelectorAll(".ghead").forEach(h => h.onclick = () => {
     const sec = h.parentElement;
     sec.classList.toggle("closed");
@@ -1517,11 +1525,13 @@ function renderFigure(res) {
   /* --- 三普土种行预算（满字号优先，行数让步） --- */
   const segs = res.segments;
   const FS = LAY.fontScale || 1;   // 整体字号：参与换行/缩字号度量（渲染后统一缩放，二者叠加正好填满格宽）
+  // 字号应用范围不含表格时，表格换行/缩字号度量按原字号（表格不被缩放）
+  const FSTbl = ["all", "tbl"].includes(LAY.fontScaleScope || "all") ? FS : 1;
   const tzFit = (text, cellPx) => {
     const L = Math.max(String(text).length, 1);
-    const perFull = Math.max(2, Math.floor((cellPx - 8) / (15.3 * FS)));
+    const perFull = Math.max(2, Math.floor((cellPx - 8) / (15.3 * FSTbl)));
     let rowsN = Math.ceil(L / perFull), fs = 15.3, per = perFull;
-    if (rowsN > 4) { rowsN = 4; per = Math.ceil(L / 4); fs = Math.max(6, Math.min(15.3, (cellPx - 8) / per / FS)); }
+    if (rowsN > 4) { rowsN = 4; per = Math.ceil(L / 4); fs = Math.max(6, Math.min(15.3, (cellPx - 8) / per / FSTbl)); }
     const lines = [];
     for (let k = 0; k < L; k += per) lines.push(String(text).slice(k, k + per));
     return { rowsN, fs, lines };
@@ -1532,7 +1542,7 @@ function renderFigure(res) {
     const wpx = (B[i + 1] - B[i]) * ppkAll + (i === 0 || i === segs.length - 1 ? ext * ppkAll : 0);
     maxTzRows = Math.max(maxTzRows, tzFit(s.tz || "—", wpx).rowsN);
   });
-  const tzRowH = Math.max(rowH, maxTzRows * 15.3 * FS * 1.18 + 10);
+  const tzRowH = Math.max(rowH, maxTzRows * 15.3 * FSTbl * 1.18 + 10);
 
   const rowsOn = c.rows.filter(r => r.on && r.key !== "code");
   // 行高按行独立：行内 rh 优先；tz 行取 max(行高, 内容所需)；profile 行特例
@@ -1862,7 +1872,7 @@ function renderFigure(res) {
     const stripTop = tableTop;
     const showCode = c.rows.find(r => r.key === "code")?.on;
     const codeBand = bandOf(c.rows.find(r => r.key === "code") || {});
-    const fitFontCode = (text, cellPx) => Math.max(6, Math.min(15.3, (cellPx - 6) / (text.length * 0.62 * FS)));
+    const fitFontCode = (text, cellPx) => Math.max(6, Math.min(15.3, (cellPx - 6) / (text.length * 0.62 * FSTbl)));
     segs.forEach((s, i) => {
       let x0 = xpx0(dispB[i]), x1 = xpx0(dispB[i + 1]);
       if (i === 0) x0 = left;
@@ -1912,7 +1922,7 @@ function renderFigure(res) {
             if (row.key === "lith") txt = tblVal(s.no, "lith") || s.lith || parentOf(s.tz, s.tl) || "—";
             else if (row.key === "geo") txt = tblVal(s.no, "geo") || s.geo || "—";
             else txt = s[row.key] || "—";
-            fs2 = Math.max(6, Math.min(row.key === "lith" ? 13.5 : 15.3, (x1 - x0 - 8) / (String(txt).length * FS)));
+            fs2 = Math.max(6, Math.min(row.key === "lith" ? 13.5 : 15.3, (x1 - x0 - 8) / (String(txt).length * FSTbl)));
             lines = [String(txt)];
           }
           const lh2 = fs2 * 1.18;
@@ -2050,29 +2060,32 @@ function renderFigure(res) {
   svg.__dragCtx = { chs, B, autoB: Bauto, deltaJ, epsB, left, spanKm, axesW, ext, res, c, ppk: axesW / spanKm, ypx, topY, terrainH,
     dragHint: svg.__dragCtx ? svg.__dragCtx.dragHint : null,
     bubble: svg.__dragCtx ? svg.__dragCtx.bubble : null };
-  // 整体字号：作用于全部文本（viewBox 尺寸不变，仅字号真实缩放；宽高属性保持 1:1 便于导出）
+  // 部位判定（字号/字体族范围共用）：轴刻度（图区左外侧）/ 表格 / 图面标注
+  const scopeOf = (t) => {
+    const x = +(t.getAttribute("x") || 0), y = +(t.getAttribute("y") || 0);
+    let tx = 0;
+    const tr = t.getAttribute("transform");
+    if (tr) { const m = tr.match(/translate\(\s*([-\d.]+)/); if (m) tx = +m[1]; }
+    const px = x || tx;
+    if (px < left - 4) return "axis";
+    if (y > tableTop) return "tbl";
+    return "lab";
+  };
+  // 整体字号：按应用范围缩放（viewBox 尺寸不变，字号真实缩放；宽高属性保持 1:1 便于导出）
   if (FS !== 1) {
+    const fsScope = LAY.fontScaleScope || "all";
     svg.querySelectorAll("[font-size]").forEach(t => {
+      if (fsScope !== "all" && scopeOf(t) !== fsScope) return;
       const v = parseFloat(t.getAttribute("font-size"));
       if (isFinite(v)) t.setAttribute("font-size", (v * FS).toFixed(2));
     });
   }
-  // 字体族：按应用范围（全部/表格/图面标注/轴刻度）分部位设置
+  // 字体族：按应用范围分部位设置
   const FF = LAY.fontFamily || "";
   if (FF) {
     const scope = LAY.fontScope || "all";
     svg.querySelectorAll("text").forEach(t => {
-      const x = +(t.getAttribute("x") || 0), y = +(t.getAttribute("y") || 0);
-      let tx = 0;
-      const tr = t.getAttribute("transform");
-      if (tr) { const m = tr.match(/translate\(\s*([-\d.]+)/); if (m) tx = +m[1]; }
-      const px = x || tx;
-      let hit;
-      if (scope === "all") hit = true;
-      else if (px < left - 4) hit = scope === "axis";          // 轴刻度/轴标签（含旋转的高程轴）
-      else if (y > tableTop) hit = scope === "tbl";            // 表格区（含行标签）
-      else hit = scope === "lab";                              // 图面标注（地名/点号/界线/指针）
-      if (hit) t.setAttribute("font-family", FF);
+      if (scope === "all" || scopeOf(t) === scope) t.setAttribute("font-family", FF);
     });
   }
   bindDragEngine(svg);
@@ -3093,6 +3106,30 @@ $("btnCodesTpl").onclick = async () => {
 $("btnCodesReset").onclick = async () => {
   try { await invoke("reset_builtin"); await loadBuiltin(); log("已恢复内置编码/色带表"); } catch (e) { log("恢复失败: " + e, "err"); }
 };
+/* 导出当前编码方案表为 CSV（全省统一 / 区县重编随当前方案，含 Hex 与 R/G/B，Excel 可直接打开） */
+$("btnCodesExport").onclick = async () => {
+  const useCounty = S.cfg.codeScheme === "county" && S.builtinCounty;
+  if (useCounty && !S.builtinCounty.codes.length) return log("区县方案尚未生成：请先装载土壤图并切换为区县重编", "err");
+  const all = useCounty ? S.builtinCounty.codes : S.builtin.codes;
+  const cmap = useCounty ? S.builtinCounty.colorByName : (S.builtin.colorByName || {});
+  const q = ($("codeSearch")?.value || "").trim();
+  const rows = all.filter(r => !q || [r.code, r.tz, r.ts, r.yl, r.tl].some(v => String(v || "").includes(q)));
+  const rgbOf = (hex) => {
+    const h = String(hex || "").replace("#", "");
+    if (h.length !== 6) return ["", "", ""];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)].map(String);
+  };
+  const esc2 = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  const csv = ["\uFEFF编号,色值Hex,R,G,B,土类,亚类,土属,土种"]
+    .concat(rows.map(r => [r.code, (cmap[r.tz] || cmap[r.tl] || ""), ...rgbOf(cmap[r.tz] || cmap[r.tl] || ""), r.tl, r.yl, r.ts, r.tz].map(esc2).join(",")))
+    .join("\r\n");
+  const schemeName = useCounty ? "区县重编" : "全省统一";
+  const suffix = q ? "-" + q : "";
+  const pth = await invoke("dlg_save", { title: `导出编码表（${schemeName}）`, defaultName: `土种编码表-${schemeName}${suffix}.csv`, filterName: "CSV", filterExt: "*.csv" });
+  if (!pth) return;
+  await invoke("write_text_file", { path: pth, content: csv });
+  log(`编码表已导出（${schemeName}，${rows.length} 条${q ? "，含搜索筛选" : ""}）: ` + pth);
+};
 $("btnAddPoint").onclick = async () => {
   if (S.useCustom) {
     // 自绘模式：同步往当前剖面点集加一个点（断面线起点），提交后端并重算，
@@ -3237,10 +3274,7 @@ document.querySelectorAll('input[name="codeScheme"]').forEach(r => r.onchange = 
   } else {
     await loadBuiltin();
   }
-  const info = $("schemeInfo");
-  if (info) info.textContent = S.cfg.codeScheme === "county"
-    ? `区县方案：${((S.builtinCounty && S.builtinCounty.codes) || []).length} 个土种（同土类 面积大→淡 小→浓）`
-    : "";
+  log(S.cfg.codeScheme === "county" ? "已切换区县重编：按土壤图面积重新编号与配色" : "已切换全省统一编码");
 });
 (async () => {
   buildSidebar();
