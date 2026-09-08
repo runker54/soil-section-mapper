@@ -103,7 +103,7 @@ const S = {
     cellSel: null,          // 当前选中格子
     rowBands: null,         // 行级独立分段 { [rowKey]: [{a,b,text},...] }（与土种格不对齐；相邻同值合并初始化）
     bandSel: null,          // 当前选中的行分段 { key, k }
-    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, fontScaleScope: "all", terrStyle: "soil", terrBandH: 0, terrLine: "black", fontFamily: "", fontScope: "all", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
+    layout: { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, fontScaleScope: "all", terrStyle: "soil", terrBandH: 0, terrLine: "color", terrLineColor: "#3f3a36", fontFamily: "", fontScope: "all", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" },
   },
   table: [],
   result: null,
@@ -124,6 +124,32 @@ const S = {
 
 /* ---------------- 工具 ---------------- */
 const $ = (id) => document.getElementById(id);
+/* 窄输入框完整内容浮层：聚焦/输入时显示被截断的值（侧栏窄列、界线描述等），失焦即隐藏 */
+(function initInputTip() {
+  const tip = document.createElement("div");
+  tip.id = "inputTip"; tip.style.display = "none";
+  document.body.appendChild(tip);
+  let cur = null;
+  const show = (inp) => {
+    if (inp !== cur) { cur = inp; }
+    tip.textContent = inp.value || inp.placeholder || "";
+    const r = inp.getBoundingClientRect();
+    tip.style.display = "block";
+    const tw = tip.offsetWidth, vw = window.innerWidth;
+    tip.style.left = Math.max(8, Math.min(r.left, vw - tw - 8)) + "px";
+    tip.style.top = Math.min(r.bottom + 5, window.innerHeight - tip.offsetHeight - 6) + "px";
+  };
+  const hide = () => { tip.style.display = "none"; cur = null; };
+  document.addEventListener("focusin", e => {
+    const t = e.target;
+    if (t.tagName === "INPUT" && !["checkbox", "radio", "color", "button", "file", "range"].includes(t.type)) show(t);
+  });
+  document.addEventListener("focusout", () => setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) hide(); }, 80));
+  document.addEventListener("input", e => {
+    const t = e.target;
+    if (t === cur) { tip.textContent = t.value || t.placeholder || ""; }
+  }, true);
+})();
 function log(msg, kind = "info") {
   const t = new Date().toTimeString().slice(0, 8);
   $("logPre").textContent += `[${t}] ${msg}\n`;
@@ -869,6 +895,11 @@ function buildSidebar() {
         rng("layTopPad", "顶部留白", 1.05, 3.0, 0.05, L.topPad || 1.28) +
         rng("layStripH", "色带高度", 24, 100, 2, L.stripH || 46, "px") +
         rng("layRowH", "默认行高", 34, 160, 2, L.rowH || 58, "px") +
+        `<div class="row" title="区县重编：按当前土壤图实际出现的土种重新编号（保持全省分类排序），同土类内面积大→淡、面积小→浓">
+          <label>编码方案</label>
+          <label class="mini"><input type="radio" name="codeScheme" value="province" ${(c.codeScheme || "province") === "province" ? "checked" : ""}/>全省统一</label>
+          <label class="mini"><input type="radio" name="codeScheme" value="county" ${c.codeScheme === "county" ? "checked" : ""}/>区县重编</label>
+        </div>` +
         rng("layFont", "整体字号", 0.5, 2.5, 0.05, L.fontScale || 1, "×") +
         `<div class="row" title="字号应用范围：全部文字，或仅表格/图面标注/轴刻度某一部位（与字体范围相互独立）">
           <label>字号范围</label>
@@ -878,8 +909,9 @@ function buildSidebar() {
           </select>
         </div>` +
         rng("layBandH", "表层色带厚", 0, 220, 4, L.terrBandH || 0, "px") +
-        `<div class="row"><label>剖面线</label>
-          <label class="mini"><input type="radio" name="terrLine" value="black" ${L.terrLine !== "soil" ? "checked" : ""}/>黑色</label>
+        `<div class="row" title="剖面轮廓线：选择色阶（默认黑）或按土种色分段着色">
+          <label>剖面线</label>
+          <input type="color" id="layLineColor" value="${L.terrLineColor || "#3f3a36"}" style="width:30px;padding:0" title="选择剖面线色阶"/>
           <label class="mini"><input type="radio" name="terrLine" value="soil" ${L.terrLine === "soil" ? "checked" : ""}/>土种色</label>
         </div>
         <div class="row" title="字体族与应用范围：可整体换字体，或仅作用于表格/图面标注/轴刻度某一部位">
@@ -904,7 +936,8 @@ function buildSidebar() {
           <input type="color" id="layT2" value="${L.terr2 || "#ccc7be"}" style="width:30px;padding:0"/>
           <input type="color" id="layT3" value="${L.terr3 || "#e5e2db"}" style="width:30px;padding:0"/>
         </div>
-        <div class="mini">整体字号作用于全部文字；各行行高可在「⑦ 制图要素」行内单独设置；随项目保存。</div>`;
+        <div class="mini">整体字号作用于全部文字；各行行高可在「⑦ 制图要素」行内单独设置；随项目保存。
+          <button class="btn small" id="btnLayReset" title="将本组版式参数全部恢复为默认值">↺ 恢复默认</button></div>`;
     })(), false),
   ];
 
@@ -1250,6 +1283,18 @@ function wireSidebar() {
     c.layout.terrLine = e.target.value;
     if (S.result) renderFigure(S.result);
   });
+  const lcSel = $("layLineColor");
+  if (lcSel) lcSel.oninput = () => { c.layout.terrLine = "color"; c.layout.terrLineColor = lcSel.value; if (S.result) renderFigure(S.result); };
+  document.querySelectorAll('#figModal input[name="codeScheme"]').forEach(r => r.onchange = e => {
+    if (e.target.checked) applyCodeScheme(e.target.value);
+  });
+  const layReset = $("btnLayReset");
+  if (layReset) layReset.onclick = () => {
+    c.layout = { figW: 0, terrainH: 470, topPad: 1.28, stripH: 46, rowH: 58, fontScale: 1, fontScaleScope: "all", terrStyle: "soil", terrBandH: 0, terrLine: "color", terrLineColor: "#3f3a36", fontFamily: "", fontScope: "all", terr1: "#b0a99f", terr2: "#ccc7be", terr3: "#e5e2db" };
+    buildSidebar();
+    if (S.result) renderFigure(S.result);
+    log("版式已恢复默认");
+  };
   const ffSel = $("layFontFam"), fsSel = $("layFontScope"), fssSel = $("layFSScope");
   if (ffSel) ffSel.onchange = () => { c.layout.fontFamily = ffSel.value; if (S.result) renderFigure(S.result); };
   if (fsSel) fsSel.onchange = () => { c.layout.fontScope = fsSel.value; if (S.result) renderFigure(S.result); };
@@ -1665,10 +1710,11 @@ function renderFigure(res) {
     svg.appendChild(el("line", { x1: xpx(kmHi), x2: xpx(kmHi), y1: ypx(disp[disp.length - 1]), y2: ypx(dispBase), stroke: "#3f3a36", "stroke-width": 1.5 }));
     svg.appendChild(el("line", { x1: xpx(kmLo), x2: xpx(kmHi), y1: ypx(dispBase), y2: ypx(dispBase), stroke: "#3f3a36", "stroke-width": 1.5 }));
   } else {
+    const lineC = LAY.terrLineColor || "#3f3a36";
     let dPath2 = `M ${xpx(stations[0][0])} ${ypx(dispBase)}`;
     stations.forEach((s, i) => dPath2 += ` L ${xpx(s[0])} ${ypx(disp[i])}`);
     dPath2 += ` L ${xpx(stations[stations.length - 1][0])} ${ypx(dispBase)} Z`;
-    svg.appendChild(el("path", { d: dPath2, fill: "none", stroke: "#3f3a36", "stroke-width": 1.5 }));
+    svg.appendChild(el("path", { d: dPath2, fill: "none", stroke: lineC, "stroke-width": 1.5 }));
   }
 
   /* --- 高程刻度与网格（可在制图要素中开关） --- */
@@ -3106,7 +3152,7 @@ $("btnCodesTpl").onclick = async () => {
 $("btnCodesReset").onclick = async () => {
   try { await invoke("reset_builtin"); await loadBuiltin(); log("已恢复内置编码/色带表"); } catch (e) { log("恢复失败: " + e, "err"); }
 };
-/* 导出当前编码方案表为 CSV（全省统一 / 区县重编随当前方案，含 Hex 与 R/G/B，Excel 可直接打开） */
+/* 导出当前编码方案表为 CSV（全省统一 / 区县重编随当前方案；色值 Hex 与 RGB 元组置末列，Excel 可直接打开） */
 $("btnCodesExport").onclick = async () => {
   const useCounty = S.cfg.codeScheme === "county" && S.builtinCounty;
   if (useCounty && !S.builtinCounty.codes.length) return log("区县方案尚未生成：请先装载土壤图并切换为区县重编", "err");
@@ -3116,12 +3162,12 @@ $("btnCodesExport").onclick = async () => {
   const rows = all.filter(r => !q || [r.code, r.tz, r.ts, r.yl, r.tl].some(v => String(v || "").includes(q)));
   const rgbOf = (hex) => {
     const h = String(hex || "").replace("#", "");
-    if (h.length !== 6) return ["", "", ""];
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)].map(String);
+    if (h.length !== 6) return "";
+    return `(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)})`;
   };
   const esc2 = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
-  const csv = ["\uFEFF编号,色值Hex,R,G,B,土类,亚类,土属,土种"]
-    .concat(rows.map(r => [r.code, (cmap[r.tz] || cmap[r.tl] || ""), ...rgbOf(cmap[r.tz] || cmap[r.tl] || ""), r.tl, r.yl, r.ts, r.tz].map(esc2).join(",")))
+  const csv = ["\uFEFF编号,土类,亚类,土属,土种,色值Hex,RGB"]
+    .concat(rows.map(r => [r.code, r.tl, r.yl, r.ts, r.tz, (cmap[r.tz] || cmap[r.tl] || ""), rgbOf(cmap[r.tz] || cmap[r.tl] || "")].map(esc2).join(",")))
     .join("\r\n");
   const schemeName = useCounty ? "区县重编" : "全省统一";
   const suffix = q ? "-" + q : "";
@@ -3258,9 +3304,8 @@ async function loadBuiltin() {
   } catch (e) { /* 未初始化时忽略 */ }
 }
 /* 编码方案切换：全省统一 ↔ 区县重编（重算编号/颜色 → 拉方案表 → band 快照按新值序列重建） */
-document.querySelectorAll('input[name="codeScheme"]').forEach(r => r.onchange = async e => {
-  if (!e.target.checked) return;
-  S.cfg.codeScheme = e.target.value;
+async function applyCodeScheme(v) {
+  S.cfg.codeScheme = v;
   if (S.result && $("figure") && $("figure").__dragCtx) {
     await compute(true);
     await loadBuiltin();
@@ -3275,7 +3320,7 @@ document.querySelectorAll('input[name="codeScheme"]').forEach(r => r.onchange = 
     await loadBuiltin();
   }
   log(S.cfg.codeScheme === "county" ? "已切换区县重编：按土壤图面积重新编号与配色" : "已切换全省统一编码");
-});
+}
 (async () => {
   buildSidebar();
   renderPointsTable();

@@ -392,3 +392,11 @@ td.num, td.num input { text-align: right; font-variant-numeric: tabular-nums; }
 }
 #measureBar b { color: #b45309; font-size: 13px; }
 #measureBar .mb-sub { color: var(--text2); font-size: 11px; }
+
+/* 窄输入框完整内容浮层（聚焦时显示被截断的值） */
+#inputTip {
+  position: fixed; z-index: 90; max-width: 340px;
+  background: #2b2521; color: #f5efe6; border: 1px solid #4a4038;
+  border-radius: 6px; padding: 5px 10px; font-size: 12.5px;
+  box-shadow: var(--shadow-2); pointer-events: none; white-space: pre-wrap; word-break: break-all;
+}
