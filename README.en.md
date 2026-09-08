@@ -33,12 +33,12 @@ Tech stack: Rust · Tauri 2 · MapLibre GL · GDAL 3.10 (dynamically loaded via 
 - Elevation axis and distance axis can be toggled independently
 - Zonal boundary lines automatically take the soil order color when the name contains one
 - Terrain coloring (soil-color default): a surface blanket follows the terrain — each soil segment's color fills a fixed depth below the surface (valleys included), fading into a globally consistent gray gradient; classic gray gradient available as an alternative with adjustable lower stops
-- Section point table: all fields editable, soil species and elevation extracted along the line by distance, drag to reorder, add/delete rows synced across table, figure, and map
+- Section point table: all fields editable with live figure sync (manual edits survive recomputation), soil species and elevation extracted along the line, drag to reorder, add/delete synced; deleting end points trims the profile line automatically
 
 ### Data and Export
 - Coding scheme: province-wide (built-in code table of 1,329 + color table of 1,505 entries) or county re-coding — species found in the loaded soil map are renumbered 1..N (keeping the provincial classification order); within a soil order the hue family is shared and shades are assigned by polygon area (large→light, rare→saturated, per the color-recommendation standard); user JSON import, template export, restore built-in
-- Export PNG (1×–4× resolution) and per-cell detail CSV; project save/open
-- CRS auto-detection; EPSG:4326/4490 automatically converted to CGCS2000 3-degree Gauss-Krüger zones for computation; warning on load for files missing a CRS
+- Export PNG (1×–4× resolution), per-cell detail CSV, and drawn line/points as GeoJSON (re-importable); current code table export to CSV (Hex + RGB); project save/open
+- Soil-map field mapping aligned with table columns (order/suborder/group/species/admin/parent material/landform); CRS auto-detection; EPSG:4326/4490 auto-converted to CGCS2000 3-degree zones; warning for files missing a CRS
 
 ## Basemap Notice
 
@@ -88,4 +88,5 @@ Download `SoilSection-Mapper-vX.Y.Z-portable.zip` from the releases page, unzip,
 
 ## Version History
 
+- 0.0.2 (2026-09-08) — county re-coding with area-based shading, terrain surface blanket and profile-line color ramp, cross-cell bands (on by default), live table-figure sync, end-point deletion trims the line, GeoJSON/CSV export, per-part font size and family, elevation-axis toggle
 - 0.0.1 (2026-08-22) — initial release

@@ -247,14 +247,14 @@ pub fn use_points_impl(st: &mut AppState, path: &str, layer: &str) -> Result<Val
 #[tauri::command]
 pub async fn use_soil(state: State<'_, SharedState>, path: String, layer: String,
                 tl: String, yl: String, ts: String, tz: String,
-                admin: String, lithology: String) -> Result<Value, String> {
+                admin: String, lithology: String, geo: Option<String>) -> Result<Value, String> {
     let mut st = state.lock().unwrap();
-    use_soil_impl(&mut st, &path, &layer, &tl, &yl, &ts, &tz, &admin, &lithology)
+    use_soil_impl(&mut st, &path, &layer, &tl, &yl, &ts, &tz, &admin, &lithology, geo.as_deref().unwrap_or(""))
 }
 
 pub fn use_soil_impl(st: &mut AppState, path: &str, layer: &str,
                      tl: &str, yl: &str, ts: &str, tz: &str,
-                     admin: &str, lithology: &str) -> Result<Value, String> {
+                     admin: &str, lithology: &str, geo: &str) -> Result<Value, String> {
     let mut src = use_layer(path, layer)?;
     // 将用户映射的字段名规范化为 TL/YL/TS/TZ/ADMIN/LITH
     let mut tl = tl.to_string(); let mut yl = yl.to_string(); let mut ts = ts.to_string(); let mut tz = tz.to_string();
@@ -275,6 +275,8 @@ pub fn use_soil_impl(st: &mut AppState, path: &str, layer: &str,
     remap(&mut src, &mut admin, "ADMIN");
     let mut lithology = lithology.to_string();
     remap(&mut src, &mut lithology, "LITH");
+    let mut geo = geo.to_string();
+    remap(&mut src, &mut geo, "GEO");
     let out = json!({"fields": src.fields, "epsg": src.epsg, "count": src.feats.len()});
     st.soil_src = Some(src);
     st.county = None;   // 换土壤图后区县编码缓存失效
@@ -541,7 +543,7 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
     struct MPt {
         no: i64, name: String, ch: f64, elev: Option<f64>,
         tl: String, yl: String, ts: String, tz: String,
-        code: String, color: String, admin: String, lith: String,
+        code: String, color: String, admin: String, lith: String, geo: String,
     }
     let mut members: Vec<MPt> = Vec::new();
     for (i, rp) in raw_points.iter().enumerate() {
@@ -567,8 +569,8 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
         let pt_epsg = line_epsg;
         let mut sp = [(px, py)];
         transform_xy(g, pt_epsg, soil_src.epsg, &mut sp)?;
-        let (tl, yl, ts, tz) = soil_at(soil_src, sp[0].0, sp[0].1)
-            .unwrap_or((String::new(), String::new(), String::new(), String::new()));
+        let (tl, yl, ts, tz, pgeo) = soil_at(soil_src, sp[0].0, sp[0].1)
+            .unwrap_or((String::new(), String::new(), String::new(), String::new(), String::new()));
         // 点 CRS -> DEM CRS 取高程
         let mut dp = [(px, py)];
         transform_xy(g, pt_epsg, dem.epsg, &mut dp)?;
@@ -582,7 +584,7 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
         let admin = rp.admin.clone();
         let lith = rp.lith.clone();
         members.push(MPt {
-            no, name, ch, elev, tl, yl, ts, tz, code, color, admin, lith,
+            no, name, ch, elev, tl, yl, ts, tz, code, color, admin, lith, geo: pgeo,
         });
     }
 
@@ -617,6 +619,7 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
             }
             let admin = s(r, "admin"); if !admin.is_empty() { mm.admin = admin; }
             let lith = s(r, "lith"); if !lith.is_empty() { mm.lith = lith; }
+            let geov = s(r, "geo"); if !geov.is_empty() { mm.geo = geov; }
             let color = s(r, "color");
             if color.starts_with('#') { mm.color = color; }
             kept.push(mm);
@@ -634,7 +637,7 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
                 tl: s(r, "tl"), yl: s(r, "yl"), ts: s(r, "ts"), tz: tz.clone(),
                 code: if s(r, "code").is_empty() { scheme_tbl.code_of_ov(&tz).unwrap_or_default() } else { s(r, "code") },
                 color: scheme_tbl.color_of_ov(&tz, &s(r, "ts"), &s(r, "yl"), &s(r, "tl")),
-                admin: s(r, "admin"), lith: s(r, "lith"),
+                admin: s(r, "admin"), lith: s(r, "lith"), geo: s(r, "geo"),
             });
         }
         members = kept;
@@ -679,7 +682,7 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
         pts_json.push(json!({
             "no": m.no, "name": m.name, "ch_km": m.ch / 1000.0, "elev": e_p,
             "code": m.code, "tz": m.tz, "ts": m.ts, "yl": m.yl, "tl": m.tl,
-            "color": m.color, "admin": m.admin, "lith": m.lith,
+            "color": m.color, "admin": m.admin, "lith": m.lith, "geo": m.geo,
         }));
         // 地貌部位（贵州山间地貌经验划分，自 Python 版 geomorph 移植）
         let mean_e = esum / en;
@@ -691,7 +694,7 @@ pub fn compute_impl(st: &mut AppState, req: Value) -> Result<Value, String> {
         let pre = if m.tl == "石灰岩土" { "岩溶" }
             else if m.tl == "水稻土" && rel < 120.0 { "坝子" }
             else { "侵蚀" };
-        let geo = format!("{}{}", pre, base);
+        let geo = if m.geo.is_empty() { format!("{}{}", pre, base) } else { m.geo.clone() };
         segs_json.push(json!({
             "x0_km": x0 / 1000.0, "x1_km": x1 / 1000.0,
             "no": m.no, "code": m.code, "tz": m.tz, "ts": m.ts, "yl": m.yl, "tl": m.tl,

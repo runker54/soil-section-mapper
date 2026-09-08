@@ -376,7 +376,7 @@ pub fn dem_sample(dem: &DemSrc, x: f64, y: f64) -> Option<f64> {
 }
 
 /// 点位土种查询：包络预筛 + OGR Contains；未命中时 500m 内就近兜底
-pub fn soil_at(soil: &VectorSrc, gx: f64, gy: f64) -> Option<(String, String, String, String)> {
+pub fn soil_at(soil: &VectorSrc, gx: f64, gy: f64) -> Option<(String, String, String, String, String)> {
     let g = get().ok()?;
     const FALLBACK_M: f64 = 500.0;
     unsafe {
@@ -411,7 +411,7 @@ pub fn soil_at(soil: &VectorSrc, gx: f64, gy: f64) -> Option<(String, String, St
         (g.f.ogr_g_destroy)(pt);
         hit.map(|f| {
             let get = |k: &str| f.attrs.get(k).cloned().unwrap_or_default();
-            (get("TL"), get("YL"), get("TS"), get("TZ"))
+            (get("TL"), get("YL"), get("TS"), get("TZ"), get("GEO"))
         })
     }
 }

@@ -34,7 +34,7 @@ fn main() {
     let r_pts = use_points_impl(&mut st, &(base.to_string() + r"\安龙县断面点加密.gdb"), "alx点合并").unwrap();
     ck!("use_points_impl", r_pts["count"] == 53, "");
     let r_soil = use_soil_impl(&mut st, &(base.to_string() + r"\alx.gdb"), "三普土壤类型图",
-                               "TL", "YL", "TS", "TZ", "", "").unwrap();
+                               "TL", "YL", "TS", "TZ", "", "", "").unwrap();
     ck!("use_soil_impl", r_soil["count"] == 20246, "");
     let r_dem = use_dem_impl(&mut st, &(base.to_string() + r"\dem.tif")).unwrap();
     ck!("use_dem_impl", r_dem["xsize"] == 2267 && r_dem["epsg"] == 4544, &format!("EPSG:{}", r_dem["epsg"]));

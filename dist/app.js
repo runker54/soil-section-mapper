@@ -78,7 +78,7 @@ const S = {
     orientation: "high_left", veAuto: true, ve: 10,
     ptNameField: "", ptNoField: "",
     filterMode: "field", filterField: "", filterValue: "", filterDist: 600,
-    soilTL: "", soilYL: "", soilTS: "", soilTZ: "", soilAdmin: "", soilLith: "",
+    soilTL: "", soilYL: "", soilTS: "", soilTZ: "", soilAdmin: "", soilLith: "", soilGEO: "",
     zones: [
       { elev: 600, name: "红壤带", key: "红壤" },
       { elev: 800, name: "黄壤带", key: "黄壤" },
@@ -292,7 +292,7 @@ async function useLayerNow(kind) {
       src.meta = await invoke("use_soil", {
         path, layer,
         tl: cfg.soilTL, yl: cfg.soilYL, ts: cfg.soilTS, tz: cfg.soilTZ,
-        admin: cfg.soilAdmin, lithology: cfg.soilLith,
+        admin: cfg.soilAdmin, lithology: cfg.soilLith, geo: cfg.soilGEO,
       });
     }
     if (kind === "soil") autoMatchFields();
@@ -410,6 +410,31 @@ async function compute(manual = false) {
     const res = await invoke("compute_section", { req: buildReq() });
     S.result = res;
     mergeTable(res);
+    // 自绘模式：表格人工编辑行（manual）属性回填计算结果——后端不接收 override，
+    // 否则重算会用旧提取值覆盖前端编辑（图/表不一致根因）
+    if (S.useCustom) {
+      const tblB = S.cfg.codeScheme === "county" && S.builtinCounty ? S.builtinCounty : S.builtin;
+      S.table.forEach(row => {
+        if (!row || !row.manual) return;
+        const noS = String(row.no);
+        const pR = res.points.find(q => String(q.no) === noS);
+        const sgR = res.segments.find(q => String(q.no) === noS);
+        for (const f of ["name", "tz", "ts", "yl", "tl", "geo", "admin", "lith", "code"]) {
+          const v = row[f];
+          if (v != null && v !== "") {
+            if (pR && f in pR) pR[f] = v;
+            if (sgR && f in sgR) sgR[f] = v;
+          }
+        }
+        if (pR && row.elev != null && row.elev !== "") pR.elev = row.elev;
+        if (sgR && row.tz) {
+          const rec = (tblB.codes || []).find(r2 => r2.tz === row.tz);
+          if (rec) sgR.code = rec.code;
+          const col = (tblB.colorByName || {})[row.tz] || (rec && (tblB.colorByName || {})[rec.tl]);
+          if (col) sgR.color = col;
+        }
+      });
+    }
     renderFigure(res);
     // 默认开启跨格合并的行：首次生成（渲染上下文就绪后）自动初始化分段；已有分段仅刷新文字
     let bandInit = false;
@@ -479,6 +504,7 @@ const FIELD_AUTO = {
   soilTZ: ["土种", "TZ", "土种名称", "土名"],
   soilAdmin: ["乡镇", "XZQMC", "行政区", "行政区划", "县乡村", "XZ", "XZMC"],
   soilLith: ["母岩", "母质", "母岩母质", "母质名称", "MZMC", "成土母质", "母岩类型"],
+  soilGEO: ["地貌", "地貌类型", "地貌名称", "GEO", "DM", "DMLX", "地貌部位"],
 };
 function autoMatchFields() {
   const c = S.cfg;
@@ -490,6 +516,7 @@ function autoMatchFields() {
   c.soilTZ = pick(FIELD_AUTO.soilTZ);
   c.soilAdmin = pick(FIELD_AUTO.soilAdmin);
   c.soilLith = pick(FIELD_AUTO.soilLith);
+  c.soilGEO = pick(FIELD_AUTO.soilGEO);
 }
 
 /* ---------------- 图层面板（QGIS Contents 风格） ---------------- */
@@ -786,7 +813,7 @@ function buildSidebar() {
   const lineOk = pr0.drawLine.length >= 2 && pr0.drawPts.length >= 1;
   const impOk = !!(S.line.meta && S.points.meta);
   const shortName = (p) => p ? p.split(/[\\/]/).pop() : "";
-  const fldAuto = [["soilTL", "土类"], ["soilYL", "亚类"], ["soilTS", "土属"], ["soilTZ", "土种"], ["soilAdmin", "行政区"], ["soilLith", "母岩母质"]];
+  const fldAuto = [["soilTL", "土类"], ["soilYL", "亚类"], ["soilTS", "土属"], ["soilTZ", "土种"], ["soilAdmin", "行政区"], ["soilLith", "母岩母质"], ["soilGEO", "地貌类型"]];
   const fldHit = fldAuto.filter(([k]) => c[k]).length;
   const html = [
     group("① 图层", `<div id="layerList"></div>`, true),
@@ -810,8 +837,8 @@ function buildSidebar() {
       </div>
       <button class="btn small primary" id="btnLoadBase" style="width:100%;margin:5px 0 2px">${baseReady ? "↻ 重新载入" : "⭳ 载入并渲染地图"}</button>
       <details class="adv" id="advSoilFields" title="土壤图属性字段映射（装载时自动匹配，可改）">
-        <summary>字段映射<span class="adv-tag">${fldHit ? `已匹配 ${fldHit}/6` : "待设置"}</span></summary>
-        ${fldAuto.map(([k, t]) => `<div class="row"><label>${t}</label><span class="fill">${selectHtml("sel-soil" + { soilTL: "TL", soilYL: "YL", soilTS: "TS", soilTZ: "TZ", soilAdmin: "AD", soilLith: "LI" }[k], fopts(S.soil.meta, c[k]), c[k])}</span></div>`).join("")}
+        <summary>字段映射<span class="adv-tag">${fldHit ? `已匹配 ${fldHit}/7` : "待设置"}</span></summary>
+        ${fldAuto.map(([k, t]) => `<div class="row"><label>${t}</label><span class="fill">${selectHtml("sel-soil" + { soilTL: "TL", soilYL: "YL", soilTS: "TS", soilTZ: "TZ", soilAdmin: "AD", soilLith: "LI", soilGEO: "GE" }[k], fopts(S.soil.meta, c[k]), c[k])}</span></div>`).join("")}
       </details>`, !baseReady),
 
     group(`${lineOk ? "✔" : ""}③ 剖面（地图绘制）`, `
@@ -820,6 +847,7 @@ function buildSidebar() {
         <button class="btn small" id="btnProfileAdd" title="新建剖面">＋</button>
         <button class="btn small danger" id="btnProfileDel" title="删除当前剖面">✕</button>
       </div>
+      <button class="btn small" id="btnProfileExport" title="导出当前剖面的断面线与断面点为 GeoJSON（WGS84，可再导入使用）" style="width:100%;margin:4px 0">⇩ 导出断面线/点（GeoJSON）</button>
       <div class="ds-stat">线 ${pr0.drawLine.length} 顶点 · 点 ${pr0.drawPts.length} 个<span title="在地图工具栏选择「✏ 画断面线」「📍 布点」绘制，归属当前剖面">ⓘ</span></div>`, true),
 
     group(`${impOk ? "✔" : ""}④ 导入线/点`, `
@@ -1083,6 +1111,26 @@ function wireSidebar() {
     buildSidebar();
     log(`已删除剖面「${pr.name}」`);
   };
+  const pe = $("btnProfileExport");
+  if (pe) pe.onclick = async () => {
+    syncMapToProfile();
+    const pr = currentProfile();
+    if (!pr.drawLine.length && !pr.drawPts.length) return log("当前剖面尚无绘制的线/点", "err");
+    const feats = [];
+    if (pr.drawLine.length >= 2) {
+      feats.push({ type: "Feature", properties: { profile: pr.name, kind: "断面线", vertices: pr.drawLine.length, length_km: +lineLenKm(pr.drawLine).toFixed(3) },
+        geometry: { type: "LineString", coordinates: pr.drawLine.map(p => [+p[0].toFixed(6), +p[1].toFixed(6)]) } });
+    }
+    pr.drawPts.forEach((p, i) => {
+      feats.push({ type: "Feature", properties: { profile: pr.name, kind: "断面点", no: i + 1, name: p[2] || `点${i + 1}` },
+        geometry: { type: "Point", coordinates: [+p[0].toFixed(6), +p[1].toFixed(6)] } });
+    });
+    const gj = JSON.stringify({ type: "FeatureCollection", name: pr.name, crs: { type: "name", properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" } }, features: feats }, null, 1);
+    const pth = await invoke("dlg_save", { title: `导出剖面「${pr.name}」线/点`, defaultName: `剖面-${pr.name}-断面线点.geojson`, filterName: "GeoJSON", filterExt: "*.geojson" });
+    if (!pth) return;
+    await invoke("write_text_file", { path: pth, content: gj });
+    log(`剖面「${pr.name}」已导出：${pr.drawLine.length} 线顶点 · ${pr.drawPts.length} 点（WGS84 GeoJSON）: ` + pth);
+  };
   const __gi = $("btnGdalInit");
   if (__gi) __gi.onclick = () => initGdal($("gdalDir").value.trim()).then(loadBuiltin);
   ["line", "points", "soil"].forEach(kind => {
@@ -1136,7 +1184,7 @@ function wireSidebar() {
   if (lf) lf.onchange = () => { c.lineIndex = +lf.value; computeDebounced(); };
   const bindField = (id, k) => { const e = $(id); if (e) { e.onchange = () => { c[k] = e.value; if (S.soil.meta) useLayerNow("soil"); }; } };
   bindField("sel-soilTL", "soilTL"); bindField("sel-soilYL", "soilYL"); bindField("sel-soilTS", "soilTS");
-  bindField("sel-soilTZ", "soilTZ"); bindField("sel-soilAD", "soilAdmin"); bindField("sel-soilLI", "soilLith");
+  bindField("sel-soilTZ", "soilTZ"); bindField("sel-soilAD", "soilAdmin"); bindField("sel-soilLI", "soilLith"); bindField("sel-soilGE", "soilGEO");
   const pno = $("sel-ptno"), pnm = $("sel-ptname");
   if (pno && !c.ptNoField && S.points.meta) {
     const autoNo = ["点编号", "编号", "NO", "no", "ID", "OBJECTID"].find(f => S.points.meta.fields.includes(f));
@@ -1348,6 +1396,23 @@ function renderPointsTable() {
       inp.__t = setTimeout(() => {
         if (inp.__snap) { pushUndo(inp.__snap); inp.__snap = null; }
         if (k === "ch" && v > 0 && S.useCustom) autoFillRowFromChainage(i, v);
+        // 自绘模式：后端不接收表格 override——前端直改计算结果，图即时更新
+        if (S.useCustom && S.result) {
+          const row = S.table[i];
+          const noS = String(row && row.no);
+          const kk = k === "ch" ? "ch_km" : k;
+          const pR = S.result.points.find(q => String(q.no) === noS);
+          const sgR = S.result.segments.find(q => String(q.no) === noS);
+          if (pR && kk in pR) pR[kk] = v;
+          if (sgR && kk in sgR) sgR[kk] = v;
+          if (k === "tz" && sgR) {
+            const tbl2 = S.cfg.codeScheme === "county" && S.builtinCounty ? S.builtinCounty : S.builtin;
+            const rec = (tbl2.codes || []).find(r2 => r2.tz === v);
+            if (rec) sgR.code = rec.code;
+            const col = (tbl2.colorByName || {})[v] || (rec && (tbl2.colorByName || {})[rec.tl]);
+            if (col) sgR.color = col;
+          }
+        }
         // band 行字段被编辑：值序列已变，按新值重新自动分段（数据驱动）
         const rw = S.cfg.rows.find(r => r.key === k);
         if (rw && rw.band && $("figure") && $("figure").__dragCtx) {
@@ -1379,8 +1444,24 @@ function renderPointsTable() {
       });
       if (pr.drawPts.length !== before) {
         S.map.pts = pr.drawPts.slice();
+        // 删端点后按剩余点里程修剪剖面线（剖面总长随之缩短，重算即生效）
+        if (pr.drawPts.length >= 2 && pr.drawLine.length >= 2) {
+          const chs = S.table.map(r => +r.ch || 0).filter(v => v > 0);
+          if (chs.length >= 2) {
+            const chA = Math.min(...chs) * 1000, chB = Math.max(...chs) * 1000;
+            const lenM = lineLenKm(pr.drawLine) * 1000;
+            if (chA > 1 || chB < lenM - 1) {
+              pr.drawLine = trimLineToCh(pr.drawLine, chA, chB);
+              S.map.draw = pr.drawLine.map(q => [q[0], q[1]]);
+              log(`端点删除：剖面线已修剪至 ${((chB - chA) / 1000).toFixed(2)} km`);
+            }
+          }
+        }
         updateDrawSources();
-        try { await commitCustomPoints(); } catch (e) { log("点集提交失败: " + e, "err"); }
+        try {
+          await invoke("set_custom_line", { pts: pr.drawLine.map(q => [q[0], q[1]]), epsg: 4326 });   // 修剪后的线同步后端
+          await commitCustomPoints();
+        } catch (e) { log("线/点提交失败: " + e, "err"); }
       } else {
         log(`未匹配到剖面点（${row.name || "点" + row.no}），表格行已删除；若再次生成该点可能恢复`, "warn");
       }
@@ -2577,6 +2658,27 @@ async function autoFillRowFromChainage(rowIdx, km) {
 
 /* ---------------- 地图测距（📏 模式） ---------------- */
 S.measure = { pts: [], done: false };
+const lineLenKm = (pts) => { let d = 0; for (let i = 1; i < pts.length; i++) d += havM(pts[i - 1], pts[i]); return d / 1000; };
+/* 沿折线累计里程裁取 [chA, chB] 米区间子线（端点线性插值）——删端点后缩短剖面线用 */
+function trimLineToCh(line, chA, chB) {
+  const out = [];
+  let acc = 0;
+  const at = (p, q, d0, d1, ch) => {
+    const t = Math.min(1, Math.max(0, (ch - d0) / Math.max(d1 - d0, 1e-9)));
+    return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+  };
+  for (let i = 1; i < line.length; i++) {
+    const p = line[i - 1], q = line[i];
+    const d = havM(p, q), a0 = acc, a1 = acc + d;
+    if (a1 >= chA && a0 <= chB) {
+      const lo = Math.max(a0, chA), hi = Math.min(a1, chB);
+      if (lo > a0) out.push(at(p, q, a0, a1, lo)); else if (!out.length || out[out.length - 1] !== p) out.push(p);
+      if (hi < a1) out.push(at(p, q, a0, a1, hi)); else out.push(q);
+    }
+    acc = a1;
+  }
+  return out.length >= 2 ? out : line.slice();
+}
 const havM = (a, b) => {
   const R = 6371008.8, rad = Math.PI / 180;
   const dLat = (b[1] - a[1]) * rad, dLng = (b[0] - a[0]) * rad;
