@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>土壤断面制图工具</title>
+<link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="vendor/maplibre-gl.css" />
+  <script src="vendor/maplibre-gl.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 21 L12 3 L20 21 H15.5 L12 12 L8.5 21 Z" fill="#E8A56C"/><rect x="4" y="21" width="16" height="1.6" fill="#A8BC82"/></svg></span>
+      <span>土壤断面制图工具 <em>SoilSection Mapper</em></span>
+    </div>
+    <div class="actions">
+      <button id="btnUndo" class="btn" title="撤销 (Ctrl+Z)">↩</button>
+      <button id="btnRedo" class="btn" title="重做 (Ctrl+Y)">↪</button>
+      <span class="sep"></span>
+      <button id="btnProjectSave" class="btn">保存项目</button>
+      <button id="btnProjectOpen" class="btn">打开项目</button>
+      <span class="sep"></span>
+      <button id="btnCompute" class="btn primary">⟳ 生成断面</button>
+    </div>
+    <div id="gdalBadge" class="badge off" title="点击展开 GDAL 设置">GDAL 未初始化</div>
+  </header>
+
+  <div class="main">
+    <!-- 侧栏 -->
+    <aside class="sidebar" id="sidebar"></aside>
+
+    <!-- 主区 -->
+    <section class="center">
+      <!-- 主区：地图工作台（全屏常态） -->
+      <section class="center">
+        <div class="map-toolbar">
+          <label class="mini"><input type="radio" name="mapmode" value="view" checked>浏览</label>
+          <label class="mini"><input type="radio" name="mapmode" value="line">✏ 画断面线</label>
+          <label class="mini"><input type="radio" name="mapmode" value="point">📍 布点</label>
+          <label class="mini"><input type="radio" name="mapmode" value="identify">🔍 识别</label>
+          <label class="mini"><input type="radio" name="mapmode" value="measure">📏 测距</label>
+          <button class="btn small" id="btnFinishDraw" title="结束画线/布点，保存当前剖面编辑">✓ 完成</button>
+          <span class="sep"></span>
+          <button class="btn small" id="btnMapFit">适配视图</button>
+          <button class="btn small" id="btnUndoDraw" title="撤销上一步绘制 (Ctrl+Z)">↩ 撤销</button>
+          <button class="btn small" id="btnMapClear">清空绘制</button>
+          <span class="sep"></span>
+          <span class="mini">沿线等距布点</span>
+          <input id="ptInterval" type="number" value="1" min="0.1" step="0.1" style="width:56px" title="间隔 km"/>
+          <span class="mini">km</span>
+          <button class="btn small" id="btnAutoPts">⚡ 沿线生成</button>
+          <span class="hint" id="mapStatus">导入土壤图与 DEM 后显示底图</span>
+        </div>
+        <div style="flex:1;min-height:0;position:relative;overflow:hidden" id="mapWrap">
+          <div id="mapLibre" style="position:absolute;inset:0"></div>
+          <div id="elevLegend" style="display:none"></div>
+          <div id="measureBar" style="display:none"></div>
+          <div class="empty" id="mapEmpty">
+            <div class="big">🗺</div>
+            <p>在左侧「② 数据源」装载土壤图与 DEM<br/>点击「载入并渲染地图」</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 断面图工作台（弹窗） -->
+    <div id="figModal">
+      <div class="fm-box">
+        <header class="fm-head">
+          <span class="brand-sm">📐 土壤断面工作台</span>
+          <span class="hint" id="figTitle"></span>
+          <span class="fill"></span>
+          <button class="btn small" id="btnCsv2">导出分段 CSV</button>
+          <button class="btn small" id="btnPng2">导出 PNG</button>
+          <span class="sep"></span>
+          <button class="btn small danger" id="figClose">✕ 关闭（返回地图）</button>
+        </header>
+                <div class="fm-body">
+          <aside class="fm-side" id="modalSidebar"></aside>
+          <div class="fm-main">
+            <div class="fm-fig">
+              <div class="preview" id="preview">
+                <div class="empty" id="previewEmpty">
+                  <div class="big">📐</div>
+                  <p>生成断面后在此预览</p>
+                </div>
+                <div id="cellBar" style="display:none">
+                  <span id="cellBarTitle" style="font-weight:600;color:#c0392b"></span>
+                  <span id="cellBarCell" style="display:inline-flex;align-items:center;gap:6px">
+                    <span class="sep"></span>
+                    <span class="mini">左边界</span>
+                    <button class="btn small" data-mb="-1" data-side="L">◀ 左移</button>
+                    <button class="btn small" data-mb="1" data-side="L">右移 ▶</button>
+                    <span class="sep"></span>
+                    <span class="mini">右边界</span>
+                    <button class="btn small" data-mb="-1" data-side="R">◀ 左移</button>
+                    <button class="btn small" data-mb="1" data-side="R">右移 ▶</button>
+                    <span class="sep"></span>
+                    <span class="mini">步长 km</span>
+                    <input id="cellStep" type="number" step="0.1" min="0.05" max="10" value="0.5" style="width:52px" />
+                  </span>
+                  <span id="cellBarBand" style="display:none;align-items:center;gap:6px">
+                    <span class="sep"></span>
+                    <span class="mini">段文字</span>
+                    <input id="bandText" style="width:150px" placeholder="如：低山台地" />
+                    <button class="btn small" id="bandSplit" title="在段中点拆分为两段">✂ 拆分</button>
+                    <button class="btn small" id="bandMerge" title="与右侧相邻段合并">⇄ 合并右段</button>
+                  </span>
+                  <button class="btn small" id="cellBarClose" title="取消选中">✕</button>
+                </div>
+                <svg id="figure" xmlns="http://www.w3.org/2000/svg"></svg>
+              </div>
+            </div>
+            <div class="fm-tabs">
+              <div class="bottombar" id="bottombar">
+                <div class="tabs">
+                  <button class="tab active" data-tab="points">断面点表格</button>
+                  <button class="tab" data-tab="codes">土种编码表</button>
+                  <button class="tab" data-tab="log">日志</button>
+                </div>
+                <div class="tabpanes">
+                  <div class="pane active" id="pane-points">
+                    <div class="pane-toolbar">
+                      <button id="btnAddPoint" class="btn small">＋ 新增点</button>
+                      <button id="btnResetPoints" class="btn small">↺ 从数据源重置</button>
+                      <button id="btnAutoBounds" class="btn small">↺ 自动格宽</button>
+                      <span class="hint">删行即从图中移除该点；⠿ 拖行调顺序；拖分段线调格宽</span>
+                    </div>
+                    <div class="tablewrap"><table id="pointsTable"></table></div>
+                  </div>
+                  <div class="pane" id="pane-codes">
+                    <div class="pane-toolbar">
+                      <input id="codeSearch" placeholder="搜索土种/土属/土类/编号…" />
+                      <span id="codeCount" class="hint"></span>
+                      <button class="btn small" id="btnCodesImport" title="导入用户土种编码/色带 JSON（覆盖内置，着色与编号即时生效）">⭳ 导入</button>
+                      <button class="btn small" id="btnCodesTpl" title="导出当前全部表为 JSON 模板（可修改后导入）">⇪ 模板</button>
+                      <button class="btn small" id="btnCodesReset" title="恢复内置编码/色带表">↺ 内置</button>
+                      <button class="btn small" id="btnCodesExport" title="导出当前编码方案表为 CSV（含色值 Hex 与 RGB，Excel 可直接打开）">⇩ 导出编码表</button>
+                    </div>
+                    <div class="tablewrap"><table id="codesTable"></table></div>
+                  </div>
+                  <div class="pane" id="pane-log"><pre id="logPre"></pre></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+<!-- 断面绘图页（弹窗）页脚：状态与断面信息（保持原布局，不含版权） -->
+  <footer class="statusbar">
+    <span id="statusLeft">就绪</span>
+    <span id="statusRight" style="margin-left:auto"></span>
+  </footer>
+
+<!-- 主页页脚：公司版权居中（JS 归位至 #app 末尾） -->
+  <footer class="statusbar" id="appFooter">
+    <span id="appCopyright"></span>
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
