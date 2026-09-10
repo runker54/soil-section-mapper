@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "土壤断面制图工具",
+  "version": "0.0.4",
+  "identifier": "com.gis.soilsection",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "土壤断面制图工具 SoilSection Mapper",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1120,
+        "minHeight": 720,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "resources": ["resources/*"]
+  }
+}
